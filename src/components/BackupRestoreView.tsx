@@ -288,18 +288,24 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
       }
     } catch (err: any) {
       console.error("Google Auth error:", err);
+      const errStr = String(err?.message || err?.type || err || "").toLowerCase();
       const isUnauth =
         err?.code === "auth/unauthorized-domain" ||
-        err?.message?.includes("auth/unauthorized-domain") ||
-        err?.message?.includes("unauthorized-domain");
+        errStr.includes("auth/unauthorized-domain") ||
+        errStr.includes("unauthorized-domain") ||
+        errStr.includes("origin_mismatch") ||
+        errStr.includes("origin mismatch");
 
       if (isUnauth) {
-        const currentHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
+        const currentOrigin = typeof window !== "undefined" ? window.location.origin : "https://cbt-exam-five.vercel.app";
+        const currentHost = typeof window !== "undefined" ? window.location.hostname : "cbt-exam-five.vercel.app";
         setUnauthDomainInfo({
           hostname: currentHost,
-          projectId: "google-workspace-app",
+          projectId: "Google Cloud / Firebase",
         });
-        setDriveError(`Domain aplikasi (${currentHost}) belum terdaftar pada konfigurasi OAuth Google.`);
+        setDriveError(
+          `Domain ${currentOrigin} belum didaftarkan di Authorized JavaScript origins Google Cloud Console.`
+        );
       } else {
         setDriveError(err?.message || "Gagal login dengan Google. Pastikan pop-up diizinkan.");
       }
@@ -834,27 +840,27 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
         </div>
       )}
 
-      {/* Firebase Unauthorized Domain Assistance Card */}
+      {/* Firebase & Google Cloud Unauthorized Domain / Origin Mismatch Assistance Card */}
       {unauthDomainInfo && (
         <div className="bg-amber-950/20 border border-amber-500/30 rounded-2xl p-5 text-amber-200 text-xs space-y-3.5 animate-in fade-in">
           <div className="flex items-start gap-3">
             <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <h4 className="font-bold text-amber-300 text-sm">
-                Panduan Mengatasi Error (auth/unauthorized-domain)
+                Panduan Mengatasi Error (Error 400: origin_mismatch / unauthorized-domain)
               </h4>
               <p className="text-amber-200/80 leading-relaxed">
-                Firebase Authentication memblokir domain baru secara bawaan demi keamanan. Untuk mengizinkan login Google di domain aplikasi Anda:
+                Google OAuth 2.0 mengharuskan setiap domain asal (<span className="font-mono text-amber-300">origin</span>) tempat aplikasi berjalan didaftarkan di <strong>Google Cloud Console</strong> demi keamanan data.
               </p>
             </div>
           </div>
 
-          <div className="bg-[#121214] border border-amber-500/20 rounded-xl p-3.5 space-y-2">
+          <div className="bg-[#121214] border border-amber-500/20 rounded-xl p-3.5 space-y-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-slate-400 text-[11px]">Domain / Hostname Saat Ini:</span>
+              <span className="text-slate-400 text-[11px]">Asal URL Aplikasi Saat Ini:</span>
               <div className="flex items-center gap-2">
                 <code className="px-2.5 py-1 bg-amber-500/10 text-amber-300 font-mono font-bold rounded-lg border border-amber-500/30 text-xs">
-                  {unauthDomainInfo.hostname}
+                  {typeof window !== "undefined" ? window.location.origin : `https://${unauthDomainInfo.hostname}`}
                 </code>
                 <button
                   type="button"
@@ -862,50 +868,41 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
                   className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer"
                 >
                   {copiedHostname ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedHostname ? "Tersalin!" : "Salin Domain"}</span>
+                  <span>{copiedHostname ? "Tersalin!" : "Salin URL Asal"}</span>
                 </button>
               </div>
             </div>
 
-            <ol className="list-decimal list-inside space-y-1.5 text-slate-300 pt-1 border-t border-slate-800 text-[11px]">
-              <li>
-                Buka <strong className="text-amber-300">Firebase Console</strong> &gt; <strong className="text-amber-300">Authentication</strong> &gt; <strong className="text-amber-300">Settings</strong> &gt; tab <strong className="text-amber-300">Authorized domains</strong>.
-              </li>
-              <li>
-                Klik tombol <strong className="text-white">"Add domain"</strong>.
-              </li>
-              <li>
-                Tempelkan domain <code className="text-amber-300 font-mono font-semibold">{unauthDomainInfo.hostname}</code> lalu klik <strong className="text-white">Save</strong>.
-              </li>
-            </ol>
+            <div className="space-y-2 text-[11px] text-slate-300 pt-2 border-t border-slate-800">
+              <div className="font-bold text-amber-300">Langkah Mendaftarkan di Google Cloud Console:</div>
+              <ol className="list-decimal list-inside space-y-1.5 pl-1 leading-relaxed">
+                <li>
+                  Buka <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google Cloud Console &gt; APIs &amp; Services &gt; Credentials</a>.
+                </li>
+                <li>
+                  Cari dan klik pada <strong>OAuth 2.0 Client ID</strong> aplikasi Anda.
+                </li>
+                <li>
+                  Pada bagian <strong>Authorized JavaScript origins</strong> (Asal JavaScript yang Diberi Otorisasi), klik <strong>+ ADD URI</strong>.
+                </li>
+                <li>
+                  Tambahkan: <code className="text-amber-300 font-mono font-bold">{typeof window !== "undefined" ? window.location.origin : `https://${unauthDomainInfo.hostname}`}</code>
+                </li>
+                <li>
+                  Klik <strong>SAVE</strong>. (Perubahan biasanya aktif dalam 1-5 menit).
+                </li>
+              </ol>
+            </div>
           </div>
 
-          <div className="flex items-center gap-3 flex-wrap pt-1">
-            <a
-              href={`https://console.firebase.google.com/project/${unauthDomainInfo.projectId}/authentication/settings`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl font-semibold text-xs transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span>Buka Firebase Console Authorized Domains</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={handleTryGisDirect}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-              <span>Coba Login Google Identity Services (Direct)</span>
-            </button>
-          </div>
-
-          <div className="p-2.5 bg-indigo-950/30 border border-indigo-500/20 rounded-xl text-indigo-200 text-[11px] flex items-center gap-2">
-            <Info className="w-4 h-4 text-indigo-400 shrink-0" />
-            <span>
-              <strong>Alternatif 100% Offline:</strong> Anda dapat langsung menggunakan tombol <strong>"Unduh File JSON"</strong> di bawah untuk menyimpan seluruh backup data lengkap ke laptop Anda tanpa membutuhkan konfigurasi Firebase!
-            </span>
+          <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl text-emerald-200 text-xs space-y-1.5">
+            <div className="flex items-center gap-2 font-bold text-emerald-300">
+              <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span>Solusi Instan Tanpa Setting Google Cloud (Paling Praktis):</span>
+            </div>
+            <p className="text-emerald-100/80 leading-relaxed text-[11px]">
+              Gunakan fitur <strong>"Integrasi Google Apps Script &amp; Google Sheets"</strong> di panel bagian atas. Fitur tersebut tidak terikat batasan domain origin OAuth, gratis, dan otomatis menyimpan seluruh naskah soal serta nilai siswa ke Google Drive &amp; Sheets Anda.
+            </p>
           </div>
         </div>
       )}

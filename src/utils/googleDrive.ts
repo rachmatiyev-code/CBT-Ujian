@@ -641,7 +641,7 @@ export async function listExamsFromGoogleDrive(accessToken: string): Promise<Goo
   const rootFolderId = await getOrCreateSlideExamFolder(accessToken);
   const backupFolderId = await getOrCreateBackupDataSubfolder(accessToken);
 
-  // Search across backup subfolder and root folder for .json files
+  // Search across backup subfolder, root folder, and Data_Soal folder for .json files
   const query = `('${backupFolderId}' in parents or '${rootFolderId}' in parents) and trashed=false and mimeType='application/json'`;
   const listUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     query
@@ -659,6 +659,36 @@ export async function listExamsFromGoogleDrive(accessToken: string): Promise<Goo
 
   const data = await res.json();
   const rawFiles: any[] = data.files || [];
+
+  // Also check if there are files in Data_Soal folder if exists
+  try {
+    const dataSoalQuery = `'${rootFolderId}' in parents and name='Data_Soal' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+    const dataSoalSearch = await fetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(dataSoalQuery)}&fields=files(id)`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (dataSoalSearch.ok) {
+      const dsData = await dataSoalSearch.json();
+      if (dsData.files && dsData.files.length > 0) {
+        const dsFolderId = dsData.files[0].id;
+        const dsFilesRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${dsFolderId}' in parents and trashed=false and mimeType='application/json'`)}&orderBy=modifiedTime desc&fields=files(id,name,createdTime,modifiedTime,size,webViewLink,description)`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (dsFilesRes.ok) {
+          const dsFilesData = await dsFilesRes.json();
+          if (dsFilesData.files) {
+            for (const f of dsFilesData.files) {
+              if (!rawFiles.some((rf) => rf.id === f.id)) {
+                rawFiles.push(f);
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (dsErr) {
+    console.warn("Data_Soal scan optional error:", dsErr);
+  }
 
   return rawFiles
     .filter((f) => !f.name.startsWith("SlideExam_CBT_Backup_")) // exclude full app backups
@@ -902,12 +932,13 @@ export async function findAndLoadExamFromDriveByCode(
     }
   } catch {}
 
-  // Tier 5: If access token available, query Google Drive API directly
+  // Tier 5: If access token available, query Google Drive API directly across backup subfolder and root folder
   const tokenToUse = accessTokenOrNull || getCachedAccessToken();
   if (tokenToUse) {
     try {
       const backupFolderId = await getOrCreateBackupDataSubfolder(tokenToUse);
-      const q = `'${backupFolderId}' in parents and name contains '${cleanQuery}' and trashed=false and mimeType='application/json'`;
+      const rootFolderId = await getOrCreateSlideExamFolder(tokenToUse);
+      const q = `('${backupFolderId}' in parents or '${rootFolderId}' in parents) and name contains '${cleanQuery}' and trashed=false and mimeType='application/json'`;
       const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)`;
       const res = await fetch(searchUrl, {
         headers: { Authorization: `Bearer ${tokenToUse}` },
