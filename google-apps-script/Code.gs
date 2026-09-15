@@ -658,6 +658,63 @@ function saveStudentRoster(tokens, examCode, examTitle, sessionToken) {
 }
 
 /**
+ * Ambil daftar nama siswa (Roster_Siswa) dari Spreadsheet 'Data_Siswa_Dan_Kelas'
+ */
+function getStudentRoster(targetExamCode, targetClass) {
+  var folders = getSystemFolders();
+  var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA);
+  var sheetRoster = ssSiswa.getSheetByName("Roster_Siswa");
+  var roster = [];
+
+  if (sheetRoster && sheetRoster.getLastRow() > 1) {
+    var data = sheetRoster.getDataRange().getValues();
+    var filterCode = targetExamCode ? String(targetExamCode).trim().toUpperCase() : "";
+    var filterClass = targetClass ? String(targetClass).trim().toUpperCase() : "";
+
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      var sId = String(row[1] || "").trim();
+      var sNisn = String(row[2] || "").trim();
+      var sName = String(row[3] || "").trim();
+      var sClass = String(row[4] || "").trim();
+      var sSeat = String(row[5] || "").trim();
+      var sStatus = String(row[6] || "belum_mulai").trim();
+      var sExamCode = String(row[7] || "").trim();
+      var sToken = String(row[8] || "").trim();
+      var sUpdated = String(row[9] || "").trim();
+
+      // Lewati baris jika nama siswa kosong
+      if (!sName) continue;
+
+      // Filter: jika siswa diinput umum di sheet (tanpa kode ujian), tampilkan untuk semua ujian
+      var matchCode = !filterCode || !sExamCode || sExamCode.toUpperCase() === filterCode;
+      var matchClass = !filterClass || !sClass || sClass.toUpperCase() === filterClass;
+
+      if (matchCode && matchClass) {
+        roster.push({
+          id: sId || ("tok-" + i + "-" + sName.toLowerCase().replace(/\s+/g, "")),
+          nisn: sNisn,
+          studentName: sName,
+          className: sClass,
+          seatNumber: sSeat,
+          status: sStatus || "belum_mulai",
+          examCode: sExamCode || targetExamCode || "",
+          token: sToken || "",
+          generatedAt: sUpdated || new Date().toISOString()
+        });
+      }
+    }
+  }
+
+  return {
+    success: true,
+    count: roster.length,
+    roster: roster,
+    spreadsheetUrl: ssSiswa.getUrl()
+  };
+}
+
+/**
  * Simpan hasil ujian siswa dan analisis pengayaan/remidi ke subfolder 'Data Analisis dan Nilai'
  */
 function saveStudentSession(session, aiAnalysis) {

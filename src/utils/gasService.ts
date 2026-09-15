@@ -573,6 +573,49 @@ export async function restoreAppBackupFromGAS(fileId: string): Promise<{ success
 }
 
 /**
+ * Ambil daftar nama siswa asli (Roster_Siswa) dari Spreadsheet 'Data_Siswa_Dan_Kelas' via Google Apps Script
+ */
+export async function fetchStudentRosterFromGAS(
+  examCode?: string,
+  className?: string
+): Promise<{ success: boolean; roster: StudentTokenItem[]; count: number; spreadsheetUrl?: string; message?: string }> {
+  try {
+    const res = await callGasEndpoint("getRoster", { examCode, className }, "GET");
+    if (res && res.success && Array.isArray(res.roster)) {
+      return {
+        success: true,
+        roster: res.roster,
+        count: res.roster.length,
+        spreadsheetUrl: res.spreadsheetUrl,
+      };
+    }
+    return {
+      success: false,
+      roster: [],
+      count: 0,
+      message: res?.error || "Gagal memuat data roster siswa dari Google Sheets.",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      roster: [],
+      count: 0,
+      message: err?.message || String(err),
+    };
+  }
+}
+
+/**
+ * Simpan atau perbarui daftar siswa (Roster_Siswa) ke Spreadsheet 'Data_Siswa_Dan_Kelas' via Google Apps Script
+ */
+export async function saveStudentRosterToGAS(
+  roster: StudentTokenItem[],
+  examCode?: string
+): Promise<{ success: boolean; count?: number; sheetUrl?: string; message?: string }> {
+  return await callGasEndpoint("saveRoster", { roster, examCode }, "POST");
+}
+
+/**
  * Mendapatkan kode backend Google Apps Script (Code.gs)
  */
 export async function getGasBackendCode(): Promise<string> {

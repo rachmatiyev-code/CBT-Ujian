@@ -37,7 +37,10 @@ import {
   Hash,
   IdCard,
   ListOrdered,
-  Cloud
+  Cloud,
+  RefreshCw,
+  FileSpreadsheet,
+  Info
 } from "lucide-react";
 import {
   ExamPackage,
@@ -53,7 +56,7 @@ import { prepareStudentExamQuestions } from "../utils/shuffle";
 import { validateExamToken, normalizeToken, deduplicateStudentTokens } from "../utils/tokenValidator";
 import { getStudentTokens, saveActiveStudentSession } from "../utils/storage";
 import { broadcastLiveSession, subscribeToSessionResets } from "../utils/liveSync";
-import { syncStudentSessionToGAS } from "../utils/gasService";
+import { syncStudentSessionToGAS, fetchStudentRosterFromGAS, getGasConfig } from "../utils/gasService";
 import { syncStudentSessionToFirestore } from "../utils/firestoreService";
 import {
   playExamTimeWarningSound,
@@ -90,8 +93,19 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
   onSwitchExam,
   requestedExamCode,
 }) => {
+  // State for live roster loaded from Google Sheets (Roster_Siswa)
+  const [cloudRosterStudents, setCloudRosterStudents] = useState<StudentTokenItem[] | null>(null);
+  const [isLoadingRoster, setIsLoadingRoster] = useState<boolean>(false);
+  const [rosterSyncMsg, setRosterSyncMsg] = useState<string | null>(null);
+  const [showRosterGuideModal, setShowRosterGuideModal] = useState<boolean>(false);
+
   // Available registered students roster from profile data (strictly deduplicated & isolated to current exam code and grade level)
   const availableStudents = React.useMemo(() => {
+    // Priority 0: Live roster loaded from Google Sheets (Roster_Siswa) via Google Apps Script
+    if (cloudRosterStudents && cloudRosterStudents.length > 0) {
+      return deduplicateStudentTokens(cloudRosterStudents, exam.code, exam.teacherProfile?.gradeLevel, exam.id);
+    }
+
     let list: StudentTokenItem[] = [];
 
     // Priority 1: Tokens explicitly saved on the exam package
@@ -169,6 +183,57 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
       setSelectedStudentId("__manual__");
     }
   }, [availableStudents.length, selectedStudentId]);
+
+  // Auto-fetch student roster from Google Sheets via GAS if configured
+  useEffect(() => {
+    const gasCfg = getGasConfig();
+    if (gasCfg.webAppUrl) {
+      setIsLoadingRoster(true);
+      fetchStudentRosterFromGAS(exam.code, exam.teacherProfile?.gradeLevel)
+        .then((res) => {
+          if (res && res.success && Array.isArray(res.roster) && res.roster.length > 0) {
+            setCloudRosterStudents(res.roster);
+            setRosterSyncMsg(`✓ ${res.roster.length} data siswa terhubung dari Google Sheets (Roster_Siswa)`);
+          }
+        })
+        .catch(() => {})
+        .finally(() => setIsLoadingRoster(false));
+    }
+  }, [exam.code, exam.teacherProfile?.gradeLevel]);
+
+  // Manual refresh student roster from Google Sheets
+  const handleManualRefreshRoster = async () => {
+    setIsLoadingRoster(true);
+    setRosterSyncMsg(null);
+    try {
+      const res = await fetchStudentRosterFromGAS(exam.code, exam.teacherProfile?.gradeLevel);
+      if (res && res.success && Array.isArray(res.roster) && res.roster.length > 0) {
+        setCloudRosterStudents(res.roster);
+        setRosterSyncMsg(`✓ Berhasil memuat ${res.roster.length} siswa asli dari spreadsheet Roster_Siswa!`);
+        setTimeout(() => setRosterSyncMsg(null), 5000);
+      } else {
+        setRosterSyncMsg("Belum ada data siswa ditemukan di spreadsheet Roster_Siswa Google Drive.");
+        setShowRosterGuideModal(true);
+      }
+    } catch {
+      setRosterSyncMsg("Gagal menghubungi Google Apps Script.");
+      setShowRosterGuideModal(true);
+    } finally {
+      setIsLoadingRoster(false);
+    }
+  };
+
+  // Check if current displayed students are dummy/sample data
+  const isUsingSampleData = React.useMemo(() => {
+    if (cloudRosterStudents && cloudRosterStudents.length > 0) return false;
+    if (exam.tokens && exam.tokens.length > 0) return false;
+    return availableStudents.some((st) =>
+      st.studentName === "Aditya Pratama Putra" ||
+      st.studentName === "Bella Safitri Anggraini" ||
+      st.studentName === "Citra Lestari" ||
+      st.studentName === "Dimas Arya Wijaya"
+    );
+  }, [availableStudents, cloudRosterStudents, exam.tokens]);
 
   // Student dropdown selector handler
   const handleSelectStudent = (studentId: string) => {
@@ -1224,7 +1289,7 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
           <form onSubmit={handleStartExamLogin} className="space-y-4">
             {/* 1. NAMA SISWA DROPDOWN */}
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
                 <label
                   htmlFor={!isManualInput ? "student-name-dropdown" : "student-name-manual-input"}
                   className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"
@@ -1232,30 +1297,48 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                   <UserCheck className="w-3.5 h-3.5 text-indigo-400" />
                   <span>Nama Lengkap Siswa</span>
                   <span className="text-rose-400">*</span>
+                  {cloudRosterStudents && cloudRosterStudents.length > 0 && (
+                    <span className="px-1.5 py-0.5 text-[9px] bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-md font-semibold">
+                      Google Sheets ({cloudRosterStudents.length})
+                    </span>
+                  )}
                 </label>
-                {availableStudents.length > 0 ? (
+                <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      const nextMode = !isManualInput;
-                      setIsManualInput(nextMode);
-                      if (nextMode) {
-                        setSelectedStudentId("__manual__");
-                      } else {
-                        setSelectedStudentId("");
-                        setLoginStudentName("");
-                        setLoginNisn("");
-                      }
-                    }}
-                    className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium underline cursor-pointer"
+                    onClick={handleManualRefreshRoster}
+                    disabled={isLoadingRoster}
+                    title="Segarkan nama murid dari file spreadsheet Roster_Siswa di Google Drive"
+                    className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1 font-medium cursor-pointer"
                   >
-                    {isManualInput ? `📋 Pilih dari Daftar (${availableStudents.length} Siswa)` : "✏️ Input Manual"}
+                    <RefreshCw className={`w-3 h-3 ${isLoadingRoster ? "animate-spin" : ""}`} />
+                    <span>{isLoadingRoster ? "Memuat..." : "Segarkan"}</span>
                   </button>
-                ) : (
-                  <span className="text-[10px] text-slate-400">
-                    Input Manual Mandiri
-                  </span>
-                )}
+
+                  {availableStudents.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextMode = !isManualInput;
+                        setIsManualInput(nextMode);
+                        if (nextMode) {
+                          setSelectedStudentId("__manual__");
+                        } else {
+                          setSelectedStudentId("");
+                          setLoginStudentName("");
+                          setLoginNisn("");
+                        }
+                      }}
+                      className="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium underline cursor-pointer"
+                    >
+                      {isManualInput ? `📋 Pilih dari Daftar (${availableStudents.length} Siswa)` : "✏️ Input Manual"}
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-slate-400">
+                      Input Manual Mandiri
+                    </span>
+                  )}
+                </div>
               </div>
 
               {!isManualInput ? (
@@ -1305,6 +1388,35 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                       ℹ️ Belum ada token nama tersimpan untuk naskah ini. Silakan ketik nama secara manual.
                     </p>
                   )}
+                </div>
+              )}
+
+              {rosterSyncMsg && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-400 font-medium animate-in fade-in">
+                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>{rosterSyncMsg}</span>
+                </div>
+              )}
+
+              {/* Sample Data Alert with Guide Modal Trigger */}
+              {isUsingSampleData && (
+                <div className="mt-2.5 p-3 bg-amber-950/40 border border-amber-800/60 rounded-xl text-xs space-y-1.5 animate-in fade-in">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-300">
+                      <Info className="w-3.5 h-3.5 shrink-0" />
+                      <span>Mengapa Muncul Data Dummy / Contoh?</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowRosterGuideModal(true)}
+                      className="text-[11px] font-bold text-amber-400 hover:text-amber-200 underline cursor-pointer shrink-0"
+                    >
+                      Cara Pasang Data Asli ↗
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Saat Mode Siswa dibuka pertama kali di perangkat baru, sistem memuat data sample bawaan jika belum mendeteksi data siswa asli dari Google Sheets (<em>Roster_Siswa</em>). Anda juga dapat klik <strong>Input Manual</strong> untuk mengetik nama mandiri.
+                  </p>
                 </div>
               )}
 
@@ -2526,6 +2638,137 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
               <RotateCcw className="w-4 h-4" />
               Kembali ke Halaman Masuk
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Panduan Data Siswa Asli (Roster_Siswa) Modal */}
+      {showRosterGuideModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#121214] border border-slate-700/80 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto shadow-2xl text-slate-100">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg sm:text-xl font-bold text-white">
+                    Panduan Data Siswa Mode Siswa (Anti Data Dummy)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Cara memastikan atau mengubah data siswa yang tampil di mode siswa
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowRosterGuideModal(false)}
+                className="p-2 text-slate-400 hover:text-white bg-[#1a1a1c] hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Mengapa Muncul Data Dummy? */}
+            <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl space-y-2">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-sm">
+                <Info className="w-4 h-4 shrink-0" />
+                <span>Mengapa Muncul Data Dummy?</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Saat Mode Siswa dibuka pertama kali di perangkat baru/siswa, sistem CBT akan memuat data sample / dummy bawaan (seperti daftar nama kelas contoh) jika aplikasi belum mendeteksi data siswa asli dari Google Sheets.
+              </p>
+            </div>
+
+            {/* Cara Memasang Data Siswa Asli */}
+            <div className="space-y-3">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Cara Memasang Data Siswa Asli:</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                {/* Step 1 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-emerald-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20">Langkah 1</span>
+                    <span className="text-slate-500 font-mono text-sm">01</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Buka Spreadsheet Roster_Siswa</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Di Google Drive Anda: Masuk ke folder <strong>Data Siswa dan Kelas</strong> di Google Drive Anda, lalu buka file spreadsheet <strong>Roster_Siswa</strong>.
+                  </p>
+                </div>
+
+                {/* Step 2 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-indigo-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-indigo-500/10 rounded-full border border-indigo-500/20">Langkah 2</span>
+                    <span className="text-slate-500 font-mono text-sm">02</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Input Data Siswa (Format Kolom)</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Isi daftar nama siswa, NIS/NISN, dan rombel/kelas sesuai dengan data sekolah Anda di sheet tersebut.
+                  </p>
+                </div>
+
+                {/* Step 3 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-amber-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-amber-500/10 rounded-full border border-amber-500/20">Langkah 3</span>
+                    <span className="text-slate-500 font-mono text-sm">03</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Sinkronkan Ke CBT</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Kembali ke dashboard guru ini, pastikan status Database Utama Google Sheets sudah <em>"Terhubung ke Google Sheets"</em>. Jika belum, klik <strong>Uji Koneksi (Ping)</strong> di tab Sinkronisasi Cloud.
+                  </p>
+                </div>
+
+                {/* Step 4 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-teal-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-teal-500/10 rounded-full border border-teal-500/20">Langkah 4</span>
+                    <span className="text-slate-500 font-mono text-sm">04</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Coba Buka Link Siswa (Verifikasi)</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Buka kembali <strong>Mode Siswa (Tab Baru)</strong> atau bagikan Link Siswa. Pilihan nama yang muncul di dropdown login siswa akan otomatis mengacu pada data dari <strong>Roster_Siswa</strong>.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Cara Verifikasi */}
+            <div className="p-4 bg-emerald-950/30 border border-emerald-800/40 rounded-2xl space-y-2">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>Cara Verifikasi:</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Setelah menginput data di spreadsheet dan merefresh halaman siswa, periksa daftar drop-down nama saat siswa mau mulai ujian. Jika nama murid Anda sudah muncul (bukan nama contoh lagi), sinkronisasi berhasil.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRosterGuideModal(false);
+                  handleManualRefreshRoster();
+                }}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Segarkan Nama Siswa Sekarang</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowRosterGuideModal(false)}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Tutup Panduan
+              </button>
+            </div>
           </div>
         </div>
       )}

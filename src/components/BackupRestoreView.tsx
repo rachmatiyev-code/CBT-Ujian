@@ -30,7 +30,9 @@ import {
   Code2,
   CheckCircle,
   ExternalLink as LinkIcon,
-  Layers
+  Layers,
+  X,
+  AlertCircle
 } from "lucide-react";
 import { AppStateBackup } from "../types";
 import { createFullAppBackup, restoreFullAppBackup, resetToDefaultData } from "../utils/storage";
@@ -113,6 +115,7 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
   const [backupSuccessMsg, setBackupSuccessMsg] = useState<string | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreSuccessMsg, setRestoreSuccessMsg] = useState<string | null>(null);
+  const [showRosterGuide, setShowRosterGuide] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>(() => new Date().toLocaleTimeString("id-ID"));
 
   // Google Apps Script (GAS) & Google Sheets Database State
@@ -707,6 +710,15 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
                 <span>Spreadsheet: <strong>Token_Ujian</strong></span>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setShowRosterGuide(true)}
+              className="mt-2 text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer underline"
+            >
+              <FileSpreadsheet className="w-3 h-3 shrink-0" />
+              <span>Cara Pasang Data Siswa Asli (Roster_Siswa) ↗</span>
+            </button>
           </div>
 
           {/* Subfolder 2 */}
@@ -1255,6 +1267,125 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
           <span>Reset ke Data Awal</span>
         </button>
       </div>
+
+      {/* Panduan Data Siswa Roster_Siswa Modal */}
+      {showRosterGuide && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-[#121214] border border-slate-700/80 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-6 max-h-[90vh] overflow-y-auto shadow-2xl text-slate-100">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg sm:text-xl font-bold text-white">
+                    Panduan Memastikan atau Mengubah Data Siswa di Mode Siswa
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Sistem Roster_Siswa Google Sheets &amp; Cara Mengganti Data Dummy
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowRosterGuide(false)}
+                className="p-2 text-slate-400 hover:text-white bg-[#1a1a1c] hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Mengapa Muncul Data Dummy? */}
+            <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl space-y-2">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>Mengapa Muncul Data Dummy?</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Saat Mode Siswa dibuka pertama kali di perangkat baru/siswa, sistem CBT akan memuat data sample / dummy bawaan (seperti daftar nama kelas contoh) jika aplikasi belum mendeteksi data siswa asli dari Google Sheets.
+              </p>
+            </div>
+
+            {/* Cara Memasang Data Siswa Asli */}
+            <div className="space-y-3">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span>Cara Memasang Data Siswa Asli:</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                {/* Step 1 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-emerald-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 rounded-full border border-emerald-500/20">Langkah 1</span>
+                    <span className="text-slate-500 font-mono text-sm">01</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Buka Spreadsheet Roster_Siswa</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Di Google Drive Anda: Masuk ke folder <strong>Data Siswa dan Kelas</strong> di Google Drive Anda, lalu buka file spreadsheet <strong>Roster_Siswa</strong>.
+                  </p>
+                </div>
+
+                {/* Step 2 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-indigo-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-indigo-500/10 rounded-full border border-indigo-500/20">Langkah 2</span>
+                    <span className="text-slate-500 font-mono text-sm">02</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Input Data Siswa (Format Kolom)</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Isi daftar nama siswa, NIS/NISN, dan rombel/kelas sesuai dengan data sekolah Anda di sheet tersebut.
+                  </p>
+                </div>
+
+                {/* Step 3 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-amber-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-amber-500/10 rounded-full border border-amber-500/20">Langkah 3</span>
+                    <span className="text-slate-500 font-mono text-sm">03</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Sinkronkan Ke CBT</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Kembali ke dashboard guru ini, pastikan status Database Utama Google Sheets sudah <em>"Terhubung ke Google Sheets"</em>. Jika belum, klik <strong>Uji Koneksi (Ping)</strong> di tab Sinkronisasi Cloud ini.
+                  </p>
+                </div>
+
+                {/* Step 4 */}
+                <div className="p-4 bg-[#1a1a1c] rounded-2xl border border-slate-800 space-y-1.5">
+                  <div className="flex items-center justify-between text-teal-400 font-bold">
+                    <span className="text-[10px] px-2 py-0.5 bg-teal-500/10 rounded-full border border-teal-500/20">Langkah 4</span>
+                    <span className="text-slate-500 font-mono text-sm">04</span>
+                  </div>
+                  <h5 className="font-bold text-white text-sm">Coba Buka Link Siswa (Verifikasi)</h5>
+                  <p className="text-slate-400 leading-relaxed text-[11px]">
+                    Buka kembali <strong>Mode Siswa (Tab Baru)</strong> atau bagikan Link Siswa. Pilihan nama yang muncul di dropdown login siswa akan otomatis mengacu pada data dari <strong>Roster_Siswa</strong>.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Cara Verifikasi */}
+            <div className="p-4 bg-emerald-950/30 border border-emerald-800/40 rounded-2xl space-y-2">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>Cara Verifikasi:</span>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Setelah menginput data di spreadsheet dan merefresh halaman siswa, periksa daftar drop-down nama saat siswa mau mulai ujian. Jika nama murid Anda sudah muncul (bukan nama contoh lagi), sinkronisasi berhasil.
+              </p>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShowRosterGuide(false)}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
+              >
+                Tutup Panduan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
