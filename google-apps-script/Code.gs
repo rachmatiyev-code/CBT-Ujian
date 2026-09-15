@@ -47,12 +47,18 @@ function doGet(e) {
   try {
     switch (action) {
       case "ping":
+        var foldersData = null;
+        try {
+          foldersData = getFoldersInfo();
+        } catch (eFolders) {
+          foldersData = { warning: "Folder database belum diinisialisasi: " + eFolders.toString() };
+        }
         result = {
           success: true,
           status: "ready",
           message: "Google Apps Script SlideExam CBT Backend aktif dan siap digunakan.",
           timestamp: new Date().toISOString(),
-          folders: getFoldersInfo()
+          folders: foldersData
         };
         break;
 
@@ -180,21 +186,97 @@ function createJsonResponse(data) {
 }
 
 /**
- * Ambil atau buat folder utama dan 3 subfolder yang diminta
+ * Resolusi folder menjadi objek Folder DriveApp yang valid
+ */
+function resolveFolder(folderOrId) {
+  if (!folderOrId) return null;
+  // Jika sudah merupakan objek Folder dengan metode getId atau getFolders
+  if (typeof folderOrId === "object") {
+    if (typeof folderOrId.getFoldersByName === "function" || typeof folderOrId.getFolders === "function") {
+      return folderOrId;
+    }
+    if (folderOrId.id) {
+      try {
+        return DriveApp.getFolderById(folderOrId.id);
+      } catch (eObjId) {
+        // Lanjutkan fallback
+      }
+    }
+  }
+  // Jika berupa string (folder ID atau nama folder)
+  if (typeof folderOrId === "string") {
+    var trimmed = folderOrId.trim();
+    if (trimmed.length > 0) {
+      try {
+        return DriveApp.getFolderById(trimmed);
+      } catch (eId) {
+        var it = DriveApp.getFoldersByName(trimmed);
+        while (it.hasNext()) {
+          var f = it.next();
+          if (!f.isTrashed()) return f;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Ambil atau buat folder utama dan 3 subfolder yang diminta secara aman
  */
 function getOrCreateFolder(parent, name) {
-  var folders;
-  if (parent) {
-    folders = parent.getFoldersByName(name);
-  } else {
-    folders = DriveApp.getFoldersByName(name);
+  var parentFolder = resolveFolder(parent);
+
+  if (parentFolder) {
+    // 1. Cari subfolder yang aktif (bukan di trash) menggunakan getFoldersByName jika tersedia
+    if (typeof parentFolder.getFoldersByName === "function") {
+      try {
+        var childIt = parentFolder.getFoldersByName(name);
+        while (childIt.hasNext()) {
+          var child = childIt.next();
+          if (!child.isTrashed()) {
+            return child;
+          }
+        }
+      } catch (eFind) {
+        // Fallback ke iterator getFolders()
+      }
+    }
+
+    // 2. Fallback pencarian iteratif menggunakan getFolders()
+    if (typeof parentFolder.getFolders === "function") {
+      try {
+        var allFolders = parentFolder.getFolders();
+        while (allFolders.hasNext()) {
+          var f = allFolders.next();
+          if (!f.isTrashed() && f.getName() === name) {
+            return f;
+          }
+        }
+      } catch (eAll) {
+        // Lanjutkan pembuatan baru
+      }
+    }
+
+    // 3. Jika belum ditemukan, buat subfolder baru di dalam parentFolder
+    if (typeof parentFolder.createFolder === "function") {
+      return parentFolder.createFolder(name);
+    }
   }
-  if (folders.hasNext()) {
-    return folders.next();
+
+  // Jika tidak ada parent (level root Google Drive)
+  try {
+    var rootIt = DriveApp.getFoldersByName(name);
+    while (rootIt.hasNext()) {
+      var rootFolder = rootIt.next();
+      if (!rootFolder.isTrashed()) {
+        return rootFolder;
+      }
+    }
+  } catch (eRoot) {
+    // Abaikan jika pencarian root gagal
   }
-  if (parent) {
-    return parent.createFolder(name);
-  }
+
   return DriveApp.createFolder(name);
 }
 
@@ -232,16 +314,29 @@ function getFoldersInfo() {
  * Ambil atau buat Spreadsheet di dalam folder tertentu
  */
 function getOrCreateSpreadsheet(folder, name, sheetsConfig) {
-  var files = folder.getFilesByName(name);
+  var targetFolder = resolveFolder(folder) || DriveApp.getRootFolder();
+  var files = targetFolder.getFilesByName(name);
   var ss;
-  if (files.hasNext()) {
+  var found = false;
+
+  while (files && files.hasNext()) {
     var file = files.next();
-    ss = SpreadsheetApp.openById(file.getId());
-  } else {
+    if (!file.isTrashed()) {
+      ss = SpreadsheetApp.openById(file.getId());
+      found = true;
+      break;
+    }
+  }
+
+  if (!found || !ss) {
     ss = SpreadsheetApp.create(name);
     var driveFile = DriveApp.getFileById(ss.getId());
-    folder.addFile(driveFile);
-    DriveApp.getRootFolder().removeFile(driveFile);
+    if (typeof driveFile.moveTo === "function") {
+      driveFile.moveTo(targetFolder);
+    } else {
+      targetFolder.addFile(driveFile);
+      try { DriveApp.getRootFolder().removeFile(driveFile); } catch(eRem) {}
+    }
   }
 
   // Siapkan sheets dan headers

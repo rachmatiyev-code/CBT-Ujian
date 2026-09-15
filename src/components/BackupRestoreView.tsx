@@ -282,16 +282,14 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
 
   const handleOpenGasCodeModal = async () => {
     setShowGasCodeModal(true);
-    if (!gasCodeContent) {
-      setIsLoadingGasCode(true);
-      try {
-        const code = await getGasBackendCode();
-        setGasCodeContent(code);
-      } catch (e) {
-        console.warn("Could not fetch code", e);
-      } finally {
-        setIsLoadingGasCode(false);
-      }
+    setIsLoadingGasCode(true);
+    try {
+      const code = await getGasBackendCode();
+      setGasCodeContent(code);
+    } catch (e) {
+      console.warn("Could not fetch code", e);
+    } finally {
+      setIsLoadingGasCode(false);
     }
   };
 
@@ -800,6 +798,21 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
               )}
               <div className="space-y-1">
                 <span className="font-semibold">{gasTestResult.message}</span>
+                {!gasTestResult.success && gasTestResult.message.includes("getFoldersByName") && (
+                  <div className="mt-2 pt-2 border-t border-rose-500/20 text-xs text-rose-200">
+                    <p className="font-semibold text-white mb-1">Perbaikan Script Diperlukan:</p>
+                    <p className="text-[11px] text-rose-300 mb-2 leading-relaxed">
+                      Kode Google Apps Script di Google Drive Anda masih menggunakan versi lama. Buka modal di bawah, salin kode <code>Code.gs</code> terbaru yang telah diperbaiki, lalu simpan dan deploy versi baru (<em>Deploy &gt; Manage deployments &gt; Edit &gt; New version</em>).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleOpenGasCodeModal}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors shadow"
+                    >
+                      Buka &amp; Salin Code.gs Terbaru
+                    </button>
+                  </div>
+                )}
                 {gasTestResult.spreadsheets && (
                   <div className="flex flex-wrap gap-2 pt-1 text-[11px]">
                     {Object.entries(gasTestResult.spreadsheets).map(([key, url]) => (
