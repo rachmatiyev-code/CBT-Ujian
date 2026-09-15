@@ -1,5 +1,6 @@
 import { ExamPackage, StudentTokenItem, StudentExamSession, GasConfig, AiDiagnosticResult } from "../types";
 import { broadcastLiveSessionReset } from "./liveSync";
+import { getStudentTokens } from "./storage";
 
 export type { GasConfig };
 
@@ -198,9 +199,40 @@ export const initializeGasDatabase = initGasFoldersAndSheets;
 export async function syncExamToGAS(
   exam: ExamPackage,
   tokens?: StudentTokenItem[]
-): Promise<{ success: boolean; message: string; sheetUrl?: string; fileUrl?: string }> {
+): Promise<{
+  success: boolean;
+  message: string;
+  sheetUrl?: string;
+  sheetSoalUrl?: string;
+  sheetSiswaUrl?: string;
+  fileUrl?: string;
+  questionsCount?: number;
+  studentsCount?: number;
+}> {
   if (!exam || (!exam.id && !exam.code)) {
     return { success: false, message: "Naskah ujian tidak valid" };
+  }
+
+  // Tentukan daftar siswa & token yang efektif (tidak boleh kosong saat sync)
+  let effectiveTokens: StudentTokenItem[] = [];
+  if (tokens && tokens.length > 0) {
+    effectiveTokens = tokens;
+  } else if (exam.tokens && exam.tokens.length > 0) {
+    effectiveTokens = exam.tokens;
+  } else {
+    try {
+      effectiveTokens = getStudentTokens();
+    } catch {
+      effectiveTokens = [];
+    }
+  }
+
+  // Lengkapi examCode pada token jika belum ada
+  if (effectiveTokens.length > 0) {
+    effectiveTokens = effectiveTokens.map((t) => ({
+      ...t,
+      examCode: t.examCode || exam.code,
+    }));
   }
 
   // 1. Selalu rekam ke Server Local Disk / API terlebih dahulu untuk kecepatan & offline-first
@@ -211,7 +243,7 @@ export async function syncExamToGAS(
       body: JSON.stringify({
         exam,
         token: exam.sessionToken,
-        tokens: tokens || exam.tokens || [],
+        tokens: effectiveTokens,
       }),
     });
   } catch (e) {
@@ -223,16 +255,30 @@ export async function syncExamToGAS(
     try {
       const gasResult = await callGasEndpoint("syncExam", {
         exam,
-        tokens: tokens || exam.tokens || [],
+        tokens: effectiveTokens,
       });
 
       if (gasResult && gasResult.success) {
-        saveGasConfig({ connected: true, lastSyncedAt: new Date().toISOString() });
+        saveGasConfig({
+          connected: true,
+          lastSyncedAt: new Date().toISOString(),
+          sheets: {
+            ...cachedGasConfig.sheets,
+            ...(gasResult.sheetSoalUrl ? { soal: { url: gasResult.sheetSoalUrl } } : {}),
+            ...(gasResult.sheetSiswaUrl ? { siswa: { url: gasResult.sheetSiswaUrl } } : {}),
+          },
+        });
         return {
           success: true,
-          message: "Naskah ujian berhasil tersimpan di Google Sheets (Data Soal) & Drive!",
-          sheetUrl: gasResult.sheetUrl,
+          message:
+            gasResult.message ||
+            `Naskah ujian (${gasResult.questionsCount || exam.questions?.length || 0} butir) & data siswa (${gasResult.studentsCount ?? effectiveTokens.length} siswa) berhasil tersimpan di Google Sheets & Drive!`,
+          sheetUrl: gasResult.sheetSoalUrl || gasResult.sheetUrl,
+          sheetSoalUrl: gasResult.sheetSoalUrl || gasResult.sheetUrl,
+          sheetSiswaUrl: gasResult.sheetSiswaUrl,
           fileUrl: gasResult.fileUrl,
+          questionsCount: gasResult.questionsCount || exam.questions?.length || 0,
+          studentsCount: gasResult.studentsCount !== undefined ? gasResult.studentsCount : effectiveTokens.length,
         };
       }
     } catch (gasErr: any) {
@@ -240,6 +286,8 @@ export async function syncExamToGAS(
       return {
         success: true,
         message: `Tersimpan secara lokal di server. Sinkronisasi ke Google Sheets tertunda: ${gasErr.message}`,
+        questionsCount: exam.questions?.length || 0,
+        studentsCount: effectiveTokens.length,
       };
     }
   }
@@ -247,6 +295,8 @@ export async function syncExamToGAS(
   return {
     success: true,
     message: "Tersimpan secara lokal. Hubungkan Google Apps Script untuk otomatis sinkron ke Google Drive & Sheets.",
+    questionsCount: exam.questions?.length || 0,
+    studentsCount: effectiveTokens.length,
   };
 }
 

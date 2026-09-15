@@ -311,23 +311,200 @@ function getFoldersInfo() {
 }
 
 /**
- * Ambil atau buat Spreadsheet di dalam folder tertentu
+ * Konfigurasi Skema Tab & Header Standar Database Spreadsheet
  */
-function getOrCreateSpreadsheet(folder, name, sheetsConfig) {
-  var targetFolder = resolveFolder(folder) || DriveApp.getRootFolder();
-  var files = targetFolder.getFilesByName(name);
-  var ss;
-  var found = false;
+var DEFAULT_SHEET_CONFIGS = {};
+DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA] = [
+  {
+    name: "Roster_Siswa",
+    headers: [
+      "Timestamp", "ID Siswa", "NISN", "Nama Lengkap Siswa", "Kelas",
+      "No Kursi", "Status Ujian", "Kode Ujian Terakhir", "Token Sesi", "Terakhir Aktif"
+    ],
+    headerBg: "#0f766e"
+  },
+  {
+    name: "Token_Ujian",
+    headers: [
+      "Timestamp", "Kode Ujian", "Judul Ujian", "Token Sesi", "Kelas Sasaran",
+      "Waktu Dibuat", "Status Token", "Total Siswa Terdaftar"
+    ],
+    headerBg: "#047857"
+  }
+];
 
-  while (files && files.hasNext()) {
-    var file = files.next();
-    if (!file.isTrashed()) {
-      ss = SpreadsheetApp.openById(file.getId());
-      found = true;
+DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL] = [
+  {
+    name: "Paket_Ujian",
+    headers: [
+      "Timestamp", "ID Ujian", "Kode Ujian", "Judul Ujian", "Mata Pelajaran",
+      "Jenjang / Kelas", "Nama Guru", "KKM Minimum", "Durasi (Menit)",
+      "Jumlah Soal", "Total Skor", "Link File JSON Drive", "Terakhir Diperbarui"
+    ],
+    headerBg: "#b45309"
+  },
+  {
+    name: "Butir_Soal",
+    headers: [
+      "Timestamp", "ID Ujian", "Kode Ujian", "No Soal", "ID Soal", "Tipe Soal",
+      "Topik Tag", "Level Kognitif", "Teks Soal", "Stimulus", "Pilihan / Pasangan",
+      "Kunci Jawaban", "Bobot Skor", "Pembahasan"
+    ],
+    headerBg: "#d97706"
+  }
+];
+
+DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS] = [
+  {
+    name: "Hasil_Ujian",
+    headers: [
+      "Timestamp", "Sesi ID", "Kode Ujian", "Judul Ujian", "Mata Pelajaran",
+      "NISN", "Nama Siswa", "Kelas", "Skor Diperoleh", "Skor Maksimal",
+      "Persentase (%)", "Status Kelulusan", "Durasi Pengerjaan (Menit)",
+      "Jumlah Soal Benar", "Jumlah Soal Salah", "Status Sesi", "Waktu Selesai"
+    ],
+    headerBg: "#4338ca"
+  },
+  {
+    name: "Pengayaan_Dan_Remidi_AI",
+    headers: [
+      "Timestamp", "Sesi ID", "Kode Ujian", "NISN", "Nama Siswa", "Kelas",
+      "Skor Akhir", "Status Kelulusan", "Diagnosis Miskonsepsi AI",
+      "Program Pengayaan AI", "Program Remidi AI", "Rekomendasi Materi Lanjutan AI", "Pesan Motivasi AI"
+    ],
+    headerBg: "#6366f1"
+  },
+  {
+    name: "Analisis_Butir_Soal",
+    headers: [
+      "Timestamp", "Kode Ujian", "No Butir", "ID Soal", "Topik / Materi",
+      "Tipe Soal", "Kunci Jawaban", "Tingkat Kesukaran", "Persentase Benar (%)",
+      "Jumlah Menjawab Benar", "Total Peserta Ujian"
+    ],
+    headerBg: "#3730a3"
+  }
+];
+
+/**
+ * Dapatkan atau buat Sheet baru secara otomatis (Self-Healing)
+ * Mendukung pencarian fleksibel case-insensitive & variasi karakter pemisah
+ */
+function getOrInsertSheet(ss, sheetName, headers, headerBg) {
+  if (!ss) return null;
+  var cleanTarget = String(sheetName || "").toLowerCase().replace(/[\s_-]+/g, "");
+  var sheets = ss.getSheets();
+  var matchedSheet = null;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var curName = sheets[i].getName();
+    var cleanCur = curName.toLowerCase().replace(/[\s_-]+/g, "");
+    if (cleanCur === cleanTarget || curName.toLowerCase() === sheetName.toLowerCase()) {
+      matchedSheet = sheets[i];
       break;
     }
   }
 
+  if (!matchedSheet) {
+    matchedSheet = ss.insertSheet(sheetName);
+  }
+
+  // Jika sheet belum ada header atau masih kosong melompong (getLastRow() === 0)
+  if (matchedSheet.getLastRow() === 0 && headers && headers.length > 0) {
+    matchedSheet.appendRow(headers);
+    try {
+      var headerRange = matchedSheet.getRange(1, 1, 1, headers.length);
+      headerRange.setFontWeight("bold");
+      headerRange.setBackground(headerBg || "#1e293b");
+      headerRange.setFontColor("#ffffff");
+      matchedSheet.setFrozenRows(1);
+    } catch(eFmt) {}
+  }
+
+  // Bersihkan sheet default bawaan Google Sheets (Sheet1 / Lembar1) jika ada sheet data lain
+  var allSheets = ss.getSheets();
+  if (allSheets.length > 1) {
+    for (var j = 0; j < allSheets.length; j++) {
+      var s = allSheets[j];
+      var sName = s.getName().toLowerCase().replace(/\s+/g, "");
+      if ((sName === "sheet1" || sName === "lembar1" || sName === "sheet") && s.getLastRow() === 0) {
+        try {
+          ss.deleteSheet(s);
+        } catch(eDel) {}
+      }
+    }
+  }
+
+  return matchedSheet;
+}
+
+/**
+ * Ambil atau buat Spreadsheet di dalam folder tertentu secara fleksibel & mandiri
+ * Mendukung variasi nama seperti data_bank_soal, Data Bank Soal, Data_Bank_Soal
+ */
+function getOrCreateSpreadsheet(folder, name, sheetsConfig) {
+  var targetFolder = resolveFolder(folder) || DriveApp.getRootFolder();
+  var cleanTargetName = String(name || "").toLowerCase().replace(/[\s_-]+/g, "");
+  var ss = null;
+  var found = false;
+
+  // 1. Cari di targetFolder terlebih dahulu (nama persis)
+  var files = targetFolder.getFilesByName(name);
+  while (files && files.hasNext()) {
+    var f = files.next();
+    if (!f.isTrashed()) {
+      try {
+        ss = SpreadsheetApp.openById(f.getId());
+        found = true;
+        break;
+      } catch(eOpen) {}
+    }
+  }
+
+  // 2. Cari variasi nama di targetFolder (e.g. data_bank_soal, Data Bank Soal)
+  if (!found || !ss) {
+    var allFilesInTarget = targetFolder.getFiles();
+    while (allFilesInTarget && allFilesInTarget.hasNext()) {
+      var cf = allFilesInTarget.next();
+      if (!cf.isTrashed()) {
+        var cfClean = cf.getName().toLowerCase().replace(/[\s_-]+/g, "");
+        if (cfClean === cleanTargetName) {
+          try {
+            ss = SpreadsheetApp.openById(cf.getId());
+            found = true;
+            break;
+          } catch(eOpen2) {}
+        }
+      }
+    }
+  }
+
+  // 3. Cari di seluruh Google Drive (jika dibuat di root atau folder lain)
+  if (!found || !ss) {
+    try {
+      var variations = [
+        name,
+        name.toLowerCase(),
+        name.replace(/_/g, " "),
+        name.replace(/_/g, " ").toLowerCase()
+      ];
+      for (var v = 0; v < variations.length; v++) {
+        var vf = DriveApp.getFilesByName(variations[v]);
+        while (vf && vf.hasNext()) {
+          var matchedFile = vf.next();
+          if (!matchedFile.isTrashed()) {
+            try {
+              ss = SpreadsheetApp.openById(matchedFile.getId());
+              found = true;
+              break;
+            } catch(eMatch) {}
+          }
+        }
+        if (found) break;
+      }
+    } catch(eDrive) {}
+  }
+
+  // 4. Jika belum ada, buat spreadsheet baru di targetFolder
   if (!found || !ss) {
     ss = SpreadsheetApp.create(name);
     var driveFile = DriveApp.getFileById(ss.getId());
@@ -339,28 +516,12 @@ function getOrCreateSpreadsheet(folder, name, sheetsConfig) {
     }
   }
 
-  // Siapkan sheets dan headers
-  if (sheetsConfig && Array.isArray(sheetsConfig)) {
-    sheetsConfig.forEach(function(cfg) {
-      var sheet = ss.getSheetByName(cfg.name);
-      if (!sheet) {
-        sheet = ss.insertSheet(cfg.name);
-      }
-      if (sheet.getLastRow() === 0 && cfg.headers && cfg.headers.length > 0) {
-        sheet.appendRow(cfg.headers);
-        var headerRange = sheet.getRange(1, 1, 1, cfg.headers.length);
-        headerRange.setFontWeight("bold");
-        headerRange.setBackground(cfg.headerBg || "#1e293b");
-        headerRange.setFontColor("#ffffff");
-        sheet.setFrozenRows(1);
-      }
+  // 5. Inisialisasi tabs & headers secara self-healing
+  var configs = sheetsConfig || DEFAULT_SHEET_CONFIGS[name] || [];
+  if (configs && Array.isArray(configs)) {
+    configs.forEach(function(cfg) {
+      getOrInsertSheet(ss, cfg.name, cfg.headers, cfg.headerBg);
     });
-
-    // Hapus 'Sheet1' bawaan jika ada sheet lain
-    var defaultSheet = ss.getSheetByName("Sheet1");
-    if (defaultSheet && ss.getSheets().length > 1) {
-      try { ss.deleteSheet(defaultSheet); } catch(e) {}
-    }
   }
 
   return ss;
@@ -373,78 +534,13 @@ function initMasterFoldersAndSheets() {
   var folders = getSystemFolders();
 
   // 1. Spreadsheet Data Siswa dan Kelas
-  var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA, [
-    {
-      name: "Roster_Siswa",
-      headers: [
-        "Timestamp", "ID Siswa", "NISN", "Nama Lengkap Siswa", "Kelas",
-        "No Kursi", "Status Ujian", "Kode Ujian Terakhir", "Token Sesi", "Terakhir Aktif"
-      ],
-      headerBg: "#0f766e"
-    },
-    {
-      name: "Token_Ujian",
-      headers: [
-        "Timestamp", "Kode Ujian", "Judul Ujian", "Token Sesi", "Kelas Sasaran",
-        "Waktu Dibuat", "Status Token", "Total Siswa Terdaftar"
-      ],
-      headerBg: "#047857"
-    }
-  ]);
+  var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA, DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA]);
 
   // 2. Spreadsheet Data Analisis dan Nilai
-  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS, [
-    {
-      name: "Hasil_Ujian",
-      headers: [
-        "Timestamp", "Sesi ID", "Kode Ujian", "Judul Ujian", "Mata Pelajaran",
-        "NISN", "Nama Siswa", "Kelas", "Skor Diperoleh", "Skor Maksimal",
-        "Persentase (%)", "Status Kelulusan", "Durasi Pengerjaan (Menit)",
-        "Jumlah Soal Benar", "Jumlah Soal Salah", "Status Sesi", "Waktu Selesai"
-      ],
-      headerBg: "#4338ca"
-    },
-    {
-      name: "Pengayaan_Dan_Remidi_AI",
-      headers: [
-        "Timestamp", "Sesi ID", "Kode Ujian", "NISN", "Nama Siswa", "Kelas",
-        "Skor Akhir", "Status Kelulusan", "Diagnosis Miskonsepsi AI",
-        "Program Pengayaan AI", "Program Remidi AI", "Rekomendasi Materi Lanjutan AI", "Pesan Motivasi AI"
-      ],
-      headerBg: "#6366f1"
-    },
-    {
-      name: "Analisis_Butir_Soal",
-      headers: [
-        "Timestamp", "Kode Ujian", "No Butir", "ID Soal", "Topik / Materi",
-        "Tipe Soal", "Kunci Jawaban", "Tingkat Kesukaran", "Persentase Benar (%)",
-        "Jumlah Menjawab Benar", "Total Peserta Ujian"
-      ],
-      headerBg: "#3730a3"
-    }
-  ]);
+  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS, DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS]);
 
   // 3. Spreadsheet Data Soal
-  var ssSoal = getOrCreateSpreadsheet(folders.soal, SHEET_NAME_SOAL, [
-    {
-      name: "Paket_Ujian",
-      headers: [
-        "Timestamp", "ID Ujian", "Kode Ujian", "Judul Ujian", "Mata Pelajaran",
-        "Jenjang / Kelas", "Nama Guru", "KKM Minimum", "Durasi (Menit)",
-        "Jumlah Soal", "Total Skor", "Link File JSON Drive", "Terakhir Diperbarui"
-      ],
-      headerBg: "#b45309"
-    },
-    {
-      name: "Butir_Soal",
-      headers: [
-        "Timestamp", "ID Ujian", "Kode Ujian", "No Soal", "ID Soal", "Tipe Soal",
-        "Topik Tag", "Level Kognitif", "Teks Soal", "Stimulus", "Pilihan / Pasangan",
-        "Kunci Jawaban", "Bobot Skor", "Pembahasan"
-      ],
-      headerBg: "#d97706"
-    }
-  ]);
+  var ssSoal = getOrCreateSpreadsheet(folders.soal, SHEET_NAME_SOAL, DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL]);
 
   return {
     success: true,
@@ -465,6 +561,7 @@ function initMasterFoldersAndSheets() {
 
 /**
  * Simpan atau perbarui Paket Ujian ke dalam subfolder 'Data Soal' dan 'Data Siswa dan Kelas'
+ * Secara otomatis menulis ke Data_Bank_Soal (Paket_Ujian & Butir_Soal) dan Data_Siswa_Dan_Kelas (Roster_Siswa & Token_Ujian)
  */
 function saveExamPackage(exam, tokens) {
   if (!exam || (!exam.id && !exam.code)) {
@@ -497,48 +594,60 @@ function saveExamPackage(exam, tokens) {
   var fileDownloadUrl = "https://drive.google.com/uc?id=" + jsonFile.getId() + "&export=download";
 
   // 2. Catat ke Spreadsheet 'Data_Bank_Soal' di subfolder 'Data Soal'
-  var ssSoal = getOrCreateSpreadsheet(folders.soal, SHEET_NAME_SOAL);
-  var sheetPaket = ssSoal.getSheetByName("Paket_Ujian");
-  if (sheetPaket) {
-    var data = sheetPaket.getDataRange().getValues();
-    var existingRow = -1;
-    for (var i = 1; i < data.length; i++) {
-      if (String(data[i][2]).toUpperCase() === examCode || String(data[i][1]) === exam.id) {
-        existingRow = i + 1;
-        break;
-      }
-    }
+  var ssSoal = getOrCreateSpreadsheet(folders.soal, SHEET_NAME_SOAL, DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL]);
+  var sheetPaket = getOrInsertSheet(
+    ssSoal,
+    "Paket_Ujian",
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL][0].headers,
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL][0].headerBg
+  );
 
-    var rowValues = [
-      new Date(),
-      exam.id || "",
-      examCode,
-      examTitle,
-      exam.teacherProfile ? exam.teacherProfile.subject : "",
-      exam.teacherProfile ? exam.teacherProfile.gradeLevel : "",
-      exam.teacherProfile ? exam.teacherProfile.teacherName : "",
-      exam.teacherProfile ? exam.teacherProfile.passingGrade : 75,
-      exam.durationMinutes || 60,
-      exam.questions ? exam.questions.length : 0,
-      exam.totalScore || 100,
-      fileUrl,
-      new Date().toISOString()
-    ];
-
-    if (existingRow > 0) {
-      sheetPaket.getRange(existingRow, 1, 1, rowValues.length).setValues([rowValues]);
-    } else {
-      sheetPaket.appendRow(rowValues);
+  var data = sheetPaket.getDataRange().getValues();
+  var existingRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][2]).toUpperCase() === examCode || (exam.id && String(data[i][1]) === exam.id)) {
+      existingRow = i + 1;
+      break;
     }
   }
 
+  var teacherProf = exam.teacherProfile || {};
+  var rowValues = [
+    new Date(),
+    exam.id || "",
+    examCode,
+    examTitle,
+    teacherProf.subject || "",
+    teacherProf.gradeLevel || "",
+    teacherProf.teacherName || "",
+    teacherProf.passingGrade || 75,
+    exam.durationMinutes || 60,
+    exam.questions ? exam.questions.length : 0,
+    exam.totalScore || 100,
+    fileUrl,
+    new Date().toISOString()
+  ];
+
+  if (existingRow > 0) {
+    sheetPaket.getRange(existingRow, 1, 1, rowValues.length).setValues([rowValues]);
+  } else {
+    sheetPaket.appendRow(rowValues);
+  }
+
   // 3. Catat butir-butir soal ke sheet 'Butir_Soal'
-  var sheetButir = ssSoal.getSheetByName("Butir_Soal");
+  var sheetButir = getOrInsertSheet(
+    ssSoal,
+    "Butir_Soal",
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL][1].headers,
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SOAL][1].headerBg
+  );
+
+  var questionsCount = 0;
   if (sheetButir && exam.questions && Array.isArray(exam.questions)) {
     // Bersihkan butir soal lama untuk ujian ini agar tidak duplikat
     var butirData = sheetButir.getDataRange().getValues();
     for (var r = butirData.length - 1; r >= 1; r--) {
-      if (String(butirData[r][2]).toUpperCase() === examCode) {
+      if (String(butirData[r][2]).toUpperCase() === examCode || (exam.id && String(butirData[r][1]) === exam.id)) {
         sheetButir.deleteRow(r + 1);
       }
     }
@@ -550,6 +659,13 @@ function saveExamPackage(exam, tokens) {
         optionsStr = q.options.map(function(o) { return o.key + ": " + o.text; }).join(" | ");
       } else if (q.matchingPairs && Array.isArray(q.matchingPairs)) {
         optionsStr = q.matchingPairs.map(function(p) { return p.left + " -> " + p.right; }).join(" | ");
+      }
+
+      var correctAnsStr = "";
+      if (Array.isArray(q.correctAnswers) && q.correctAnswers.length > 0) {
+        correctAnsStr = q.correctAnswers.join(", ");
+      } else if (q.correctAnswer) {
+        correctAnsStr = String(q.correctAnswer);
       }
 
       rowsToAdd.push([
@@ -564,30 +680,40 @@ function saveExamPackage(exam, tokens) {
         q.questionText || "",
         q.stimulus || "",
         optionsStr,
-        q.correctAnswer || "",
+        correctAnsStr,
         q.score || 10,
         q.explanation || ""
       ]);
     });
 
     if (rowsToAdd.length > 0) {
+      var requiredRows = sheetButir.getLastRow() + rowsToAdd.length;
+      if (sheetButir.getMaxRows() < requiredRows) {
+        sheetButir.insertRowsAfter(sheetButir.getMaxRows(), rowsToAdd.length);
+      }
       sheetButir.getRange(sheetButir.getLastRow() + 1, 1, rowsToAdd.length, rowsToAdd[0].length).setValues(rowsToAdd);
+      questionsCount = rowsToAdd.length;
     }
   }
 
-  // 4. Jika ada token dan roster siswa, catat ke subfolder 'Data Siswa dan Kelas'
-  if (tokens && Array.isArray(tokens) && tokens.length > 0) {
-    saveStudentRoster(tokens, examCode, examTitle, exam.sessionToken);
+  // 4. Selalu sinkronkan data siswa & token ke subfolder 'Data Siswa dan Kelas' (Data_Siswa_Dan_Kelas)
+  var effectiveTokens = tokens;
+  if ((!effectiveTokens || !effectiveTokens.length) && exam.tokens && exam.tokens.length) {
+    effectiveTokens = exam.tokens;
   }
+  var rosterRes = saveStudentRoster(effectiveTokens || [], examCode, examTitle, exam.sessionToken);
 
   return {
     success: true,
-    message: "Paket ujian berhasil disimpan ke Google Sheets (Data Soal) & Drive.",
+    message: "Naskah ujian (" + questionsCount + " butir soal) dan data siswa (" + (effectiveTokens ? effectiveTokens.length : 0) + " siswa) berhasil ditulis ke Google Sheets & Drive!",
     examCode: examCode,
+    questionsCount: questionsCount,
+    studentsCount: effectiveTokens ? effectiveTokens.length : 0,
     fileId: jsonFile.getId(),
     fileUrl: fileUrl,
     downloadUrl: fileDownloadUrl,
-    sheetUrl: ssSoal.getUrl()
+    sheetSoalUrl: ssSoal.getUrl(),
+    sheetSiswaUrl: rosterRes.sheetUrl
   };
 }
 
@@ -596,10 +722,17 @@ function saveExamPackage(exam, tokens) {
  */
 function saveStudentRoster(tokens, examCode, examTitle, sessionToken) {
   var folders = getSystemFolders();
-  var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA);
+  var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA, DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA]);
 
-  var sheetRoster = ssSiswa.getSheetByName("Roster_Siswa");
-  if (sheetRoster && Array.isArray(tokens)) {
+  var sheetRoster = getOrInsertSheet(
+    ssSiswa,
+    "Roster_Siswa",
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][0].headers,
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][0].headerBg
+  );
+
+  var countAdded = 0;
+  if (sheetRoster && Array.isArray(tokens) && tokens.length > 0) {
     var rosterData = sheetRoster.getDataRange().getValues();
     var existingMap = {};
     for (var i = 1; i < rosterData.length; i++) {
@@ -607,6 +740,7 @@ function saveStudentRoster(tokens, examCode, examTitle, sessionToken) {
       existingMap[key] = i + 1;
     }
 
+    var rowsToAppend = [];
     tokens.forEach(function(tok) {
       var tNisn = String(tok.nisn || "").trim();
       var tCode = String(tok.examCode || examCode || "").trim().toUpperCase();
@@ -628,31 +762,64 @@ function saveStudentRoster(tokens, examCode, examTitle, sessionToken) {
       if (existingMap[lookupKey]) {
         sheetRoster.getRange(existingMap[lookupKey], 1, 1, rowValues.length).setValues([rowValues]);
       } else {
-        sheetRoster.appendRow(rowValues);
+        rowsToAppend.push(rowValues);
       }
+      countAdded++;
     });
+
+    if (rowsToAppend.length > 0) {
+      var requiredRows = sheetRoster.getLastRow() + rowsToAppend.length;
+      if (sheetRoster.getMaxRows() < requiredRows) {
+        sheetRoster.insertRowsAfter(sheetRoster.getMaxRows(), rowsToAppend.length);
+      }
+      sheetRoster.getRange(sheetRoster.getLastRow() + 1, 1, rowsToAppend.length, rowsToAppend[0].length).setValues(rowsToAppend);
+    }
   }
 
-  // Catat Token Sesi Umum ke sheet 'Token_Ujian'
+  // Catat atau perbarui Token Sesi Umum ke sheet 'Token_Ujian'
   if (sessionToken && examCode) {
-    var sheetToken = ssSiswa.getSheetByName("Token_Ujian");
+    var sheetToken = getOrInsertSheet(
+      ssSiswa,
+      "Token_Ujian",
+      DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][1].headers,
+      DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][1].headerBg
+    );
+
     if (sheetToken) {
-      sheetToken.appendRow([
+      var tData = sheetToken.getDataRange().getValues();
+      var existingTRow = -1;
+      var cleanTargetCode = String(examCode).trim().toUpperCase();
+
+      for (var t = 1; t < tData.length; t++) {
+        if (String(tData[t][1]).trim().toUpperCase() === cleanTargetCode) {
+          existingTRow = t + 1;
+          break;
+        }
+      }
+
+      var className = (tokens && tokens[0] && tokens[0].className) ? tokens[0].className : "Semua Kelas";
+      var tRowValues = [
         new Date(),
-        examCode,
+        cleanTargetCode,
         examTitle || "",
         sessionToken,
-        tokens[0] ? tokens[0].className : "Semua Kelas",
+        className,
         new Date().toISOString(),
         "Aktif",
-        tokens.length
-      ]);
+        tokens ? tokens.length : 0
+      ];
+
+      if (existingTRow > 0) {
+        sheetToken.getRange(existingTRow, 1, 1, tRowValues.length).setValues([tRowValues]);
+      } else {
+        sheetToken.appendRow(tRowValues);
+      }
     }
   }
 
   return {
     success: true,
-    count: tokens.length,
+    count: countAdded,
     sheetUrl: ssSiswa.getUrl()
   };
 }
@@ -723,10 +890,16 @@ function saveStudentSession(session, aiAnalysis) {
   }
 
   var folders = getSystemFolders();
-  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS);
+  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS, DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS]);
 
   // 1. Tulis ke sheet 'Hasil_Ujian'
-  var sheetHasil = ssAnalisis.getSheetByName("Hasil_Ujian");
+  var sheetHasil = getOrInsertSheet(
+    ssAnalisis,
+    "Hasil_Ujian",
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS][0].headers,
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS][0].headerBg
+  );
+
   if (sheetHasil) {
     var data = sheetHasil.getDataRange().getValues();
     var existingRow = -1;
@@ -782,8 +955,13 @@ function saveStudentSession(session, aiAnalysis) {
 
   // 3. Perbarui status siswa di 'Data Siswa dan Kelas' -> 'Roster_Siswa'
   try {
-    var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA);
-    var sheetRoster = ssSiswa.getSheetByName("Roster_Siswa");
+    var ssSiswa = getOrCreateSpreadsheet(folders.siswa, SHEET_NAME_SISWA, DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA]);
+    var sheetRoster = getOrInsertSheet(
+      ssSiswa,
+      "Roster_Siswa",
+      DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][0].headers,
+      DEFAULT_SHEET_CONFIGS[SHEET_NAME_SISWA][0].headerBg
+    );
     if (sheetRoster) {
       var rData = sheetRoster.getDataRange().getValues();
       for (var k = 1; k < rData.length; k++) {
@@ -815,8 +993,13 @@ function saveStudentSession(session, aiAnalysis) {
  */
 function saveAiPengayaanRemidi(session, aiAnalysis) {
   var folders = getSystemFolders();
-  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS);
-  var sheetAI = ssAnalisis.getSheetByName("Pengayaan_Dan_Remidi_AI");
+  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS, DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS]);
+  var sheetAI = getOrInsertSheet(
+    ssAnalisis,
+    "Pengayaan_Dan_Remidi_AI",
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS][1].headers,
+    DEFAULT_SHEET_CONFIGS[SHEET_NAME_ANALISIS][1].headerBg
+  );
   if (!sheetAI) return { success: false, error: "Sheet Pengayaan_Dan_Remidi_AI tidak ditemukan" };
 
   var cleanSessionId = String(session.id).trim();

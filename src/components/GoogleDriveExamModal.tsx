@@ -40,7 +40,7 @@ import {
   listExamsFromGAS,
   getGasBackendCode,
 } from "../utils/gasService";
-import { getExamPackages, saveExamPackages } from "../utils/storage";
+import { getExamPackages, saveExamPackages, getStudentTokens } from "../utils/storage";
 
 interface GoogleDriveExamModalProps {
   isOpen: boolean;
@@ -241,10 +241,17 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
     setStatusMsg(null);
     try {
       if (isGasConfigured()) {
-        const gasRes = await syncExamToGAS(activeExam, tokens);
+        const effectiveTokens = (tokens && tokens.length > 0)
+          ? tokens
+          : (activeExam.tokens && activeExam.tokens.length > 0)
+            ? activeExam.tokens
+            : getStudentTokens();
+
+        const gasRes = await syncExamToGAS(activeExam, effectiveTokens);
         if (gasRes && gasRes.success) {
           const updatedExam: ExamPackage = {
             ...activeExam,
+            tokens: effectiveTokens,
             gdriveSyncedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             ...(gasRes.fileUrl ? { gdriveWebViewLink: gasRes.fileUrl } : {}),
@@ -258,9 +265,14 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
           else all.unshift(updatedExam);
           saveExamPackages(all);
 
+          setGasConfig(getGasConfig());
+
+          const qCount = gasRes.questionsCount || activeExam.questions.length;
+          const sCount = gasRes.studentsCount !== undefined ? gasRes.studentsCount : effectiveTokens.length;
+
           setStatusMsg({
             type: "success",
-            text: `✓ Naskah Soal "${activeExam.title}" (${activeExam.questions.length} butir) berhasil disimpan di Google Drive (Folder Data Soal) & Sheets! (100% Bebas OAuth)`,
+            text: `✓ Naskah Soal & Data Siswa Berhasil Ditulis ke Google Sheets! (${qCount} Butir Soal di Data_Bank_Soal • ${sCount} Siswa di Data_Siswa_Dan_Kelas)`,
           });
           await fetchExamsList();
           return;
@@ -666,20 +678,82 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
             </div>
 
             {activeExam.gdriveSyncedAt && (
-              <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/20 px-3 py-1.5 rounded-xl">
-                <Check className="w-3.5 h-3.5" />
-                <span>Tersimpan di Google Drive • Terakhir disinkronkan: {new Date(activeExam.gdriveSyncedAt).toLocaleString("id-ID")}</span>
-                {activeExam.gdriveWebViewLink && (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/20 px-3 py-2 rounded-xl">
+                  <Check className="w-3.5 h-3.5 shrink-0" />
+                  <span className="font-semibold">
+                    Tersinkron ke Google Drive & Sheets • {new Date(activeExam.gdriveSyncedAt).toLocaleString("id-ID")}
+                  </span>
+                  {activeExam.gdriveWebViewLink && (
+                    <a
+                      href={activeExam.gdriveWebViewLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-auto inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-semibold underline text-[11px]"
+                    >
+                      <span>Lihat File JSON Soal</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+
+                {/* Direct Links to Google Sheets Databases */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
                   <a
-                    href={activeExam.gdriveWebViewLink}
+                    href={gasConfig.sheets?.soal?.url || `https://drive.google.com/drive/search?q=${encodeURIComponent("Data_Bank_Soal")}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="ml-auto inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-semibold underline text-[11px]"
+                    className="p-2.5 bg-slate-900/80 hover:bg-slate-800/90 border border-amber-500/30 hover:border-amber-500/50 rounded-xl flex items-center justify-between transition-all group cursor-pointer"
                   >
-                    <span>Buka Drive/Spreadsheet</span>
-                    <ExternalLink className="w-3 h-3" />
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                        <Database className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="text-left">
+                        <div className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">
+                          Data_Bank_Soal
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Sheet: Paket_Ujian & Butir_Soal
+                        </div>
+                      </div>
+                    </div>
+                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-amber-300" />
                   </a>
-                )}
+
+                  <a
+                    href={gasConfig.sheets?.siswa?.url || `https://drive.google.com/drive/search?q=${encodeURIComponent("Data_Siswa_Dan_Kelas")}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="p-2.5 bg-slate-900/80 hover:bg-slate-800/90 border border-emerald-500/30 hover:border-emerald-500/50 rounded-xl flex items-center justify-between transition-all group cursor-pointer"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                        <Database className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="text-left">
+                        <div className="text-xs font-bold text-white group-hover:text-emerald-300 transition-colors">
+                          Data_Siswa_Dan_Kelas
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Sheet: Roster_Siswa & Token_Ujian
+                        </div>
+                      </div>
+                    </div>
+                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-300" />
+                  </a>
+                </div>
+
+                {/* Panduan jika spreadsheet masih kosong */}
+                <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-xl space-y-1.5 text-xs text-amber-200/90">
+                  <div className="flex items-center gap-1.5 font-bold text-amber-300 text-[11px]">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Catatan Jika Spreadsheet di Google Drive Anda Masih Kosong:</span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-slate-300">
+                    Jika spreadsheet sudah terbuat di Drive tetapi isinya masih kosong, biasanya dikarenakan script di Google Apps Script Anda belum diperbarui ke versi terbaru. Buka tombol <strong>Kode Script (Code.gs)</strong> di kanan atas, salin kode terbaru, lalu di Google Apps Script klik <strong>Deploy &rarr; Kelola Deployment &rarr; Edit (pensil) &rarr; Versi Baru &rarr; Terapkan</strong>, lalu klik kembali tombol <strong>Perbarui di Google Drive</strong> di atas.
+                  </p>
+                </div>
               </div>
             )}
           </div>
@@ -933,16 +1007,28 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
               </button>
             </div>
             <div className="p-4 overflow-y-auto space-y-3 text-xs text-slate-300 flex-1">
-              <div className="p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-xl space-y-1">
-                <div className="font-bold text-white">Langkah Pasang Cepat (2 Menit):</div>
-                <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px]">
-                  <li>Buka <a href="https://script.google.com" target="_blank" rel="noreferrer" className="text-indigo-400 underline">script.google.com</a> lalu buat Proyek Baru.</li>
-                  <li>Tempel kode script di bawah ini ke file <code className="text-emerald-300">Code.gs</code>.</li>
-                  <li>Klik <strong>Terapkan (Deploy)</strong> &rarr; <strong>Kelola Deployment</strong> &rarr; <strong>Deployment Baru</strong>.</li>
-                  <li>Pilih jenis: <strong>Aplikasi Web</strong> (Web App).</li>
-                  <li>Setel <em>Execute as:</em> <strong>Me (Saya)</strong> dan <em>Who has access:</em> <strong>Anyone (Siapa saja)</strong>.</li>
-                  <li>Salin Web App URL yang dihasilkan dan tempelkan di kotak URL di atas!</li>
-                </ol>
+              <div className="p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-xl space-y-2">
+                <div className="font-bold text-white text-xs">Petunjuk Penggunaan / Pembaruan Script:</div>
+                <div className="space-y-1.5 text-slate-300 text-[11px]">
+                  <div className="font-semibold text-emerald-300">A. Untuk Deployment Baru:</div>
+                  <ol className="list-decimal list-inside space-y-0.5 pl-1">
+                    <li>Buka <a href="https://script.google.com" target="_blank" rel="noreferrer" className="text-indigo-400 underline font-semibold">script.google.com</a> &rarr; Proyek Baru.</li>
+                    <li>Salin & tempel kode script di bawah ke file <code className="text-emerald-300">Code.gs</code>.</li>
+                    <li>Klik <strong>Deploy (Terapkan)</strong> &rarr; <strong>Deployment Baru</strong> &rarr; Pilih <strong>Aplikasi Web</strong>.</li>
+                    <li>Setel <em>Who has access</em>: <strong>Anyone (Siapa saja)</strong> &rarr; Klik <strong>Deploy</strong>.</li>
+                    <li>Salin Web App URL (akhiran <code>/exec</code>) ke aplikasi ini.</li>
+                  </ol>
+
+                  <div className="font-semibold text-amber-300 pt-1">B. Jika Sudah Pernah Deploy & Spreadsheet Masih Kosong:</div>
+                  <ol className="list-decimal list-inside space-y-0.5 pl-1 text-amber-100/90">
+                    <li>Salin kode script terbaru di bawah ini ke <code className="text-white font-mono">Code.gs</code> di Apps Script Anda lalu simpan.</li>
+                    <li>Klik <strong>Deploy (Terapkan)</strong> &rarr; pilih <strong>Kelola Deployment (Manage deployments)</strong>.</li>
+                    <li>Klik ikon pensil <strong>Edit</strong> di kanan atas dialog deployment.</li>
+                    <li>Pada pilihan Versi, ganti ke <strong>Versi baru (New version)</strong>.</li>
+                    <li>Klik tombol biru <strong>Terapkan (Deploy)</strong>.</li>
+                    <li>Kembali ke aplikasi ini lalu klik <strong>Perbarui di Google Drive</strong>. Semua data soal & siswa akan langsung masuk ke spreadsheet!</li>
+                  </ol>
+                </div>
               </div>
 
               <div className="relative">

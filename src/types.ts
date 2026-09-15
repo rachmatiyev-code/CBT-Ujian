@@ -192,8 +192,8 @@ export interface AiDiagnosticResult {
 }
 
 export interface GasFolderItem {
-  id: string;
-  name: string;
+  id?: string;
+  name?: string;
   url: string;
 }
 
