@@ -1019,11 +1019,15 @@ function batchDeleteStudentSessions(sessionIds, examCode) {
  * Simpan backup aplikasi lengkap ke folder utama 'CBT SlideExam Database'
  */
 function saveAppBackup(backupData) {
+  if (!backupData) {
+    return { success: false, message: "Data backup kosong atau tidak valid." };
+  }
   var folders = getSystemFolders();
+  var targetFolder = (folders && folders.master) ? folders.master : DriveApp.getRootFolder();
   var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd_HH-mm-ss");
   var fileName = "SlideExam_CBT_Backup_" + timestamp + ".json";
   var jsonContent = typeof backupData === "string" ? backupData : JSON.stringify(backupData, null, 2);
-  var file = folders.master.createFile(fileName, jsonContent, "application/json");
+  var file = targetFolder.createFile(fileName, jsonContent, "application/json");
 
   try {
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -1043,9 +1047,10 @@ function saveAppBackup(backupData) {
  */
 function listAppBackups() {
   var folders = getSystemFolders();
-  var files = folders.master.getFiles();
+  var targetFolder = (folders && folders.master) ? folders.master : DriveApp.getRootFolder();
+  var files = targetFolder.getFiles();
   var backups = [];
-  while (files.hasNext()) {
+  while (files && files.hasNext()) {
     var f = files.next();
     var name = f.getName();
     if (name.indexOf("SlideExam_CBT_Backup_") === 0 && name.indexOf(".json") !== -1) {

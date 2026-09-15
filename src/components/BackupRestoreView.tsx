@@ -161,7 +161,14 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
         throw new Error(res?.message || "Gagal mencadangkan ke Google Drive via Google Apps Script.");
       }
     } catch (err: any) {
-      setDriveError(`Gagal backup via Apps Script: ${err?.message || String(err)}`);
+      const rawMsg = err?.message || String(err);
+      if (rawMsg.toLowerCase().includes("failed to fetch") || rawMsg.toLowerCase().includes("networkerror")) {
+        setDriveError(
+          "Gagal menghubungi Google Apps Script (Failed to fetch). Pastikan saat Deploy Web App di script.google.com, opsi 'Who has access' (Siapa yang memiliki akses) dipilih 'Anyone' (Siapa saja), bukan 'Only myself'. Setelah diubah, buat versi deploy baru."
+        );
+      } else {
+        setDriveError(`Gagal backup via Apps Script: ${rawMsg}`);
+      }
     } finally {
       setIsBackingUpGAS(false);
     }

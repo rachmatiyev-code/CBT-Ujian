@@ -645,6 +645,105 @@ app.get("/api/gas/code", (req, res) => {
   }
 });
 
+// Endpoint proxy for Google Apps Script Web App requests
+// Bypasses browser CORS restrictions, cross-origin redirects, and iframe sandbox blocks
+app.post("/api/gas/proxy", async (req, res) => {
+  try {
+    const { url, action, payload, method = "POST" } = req.body;
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ success: false, error: "URL Web App Google Apps Script belum diisi." });
+    }
+
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl.startsWith("https://script.google.com/")) {
+      return res.status(400).json({ success: false, error: "URL tidak valid. URL harus diawali dengan https://script.google.com/macros/s/..." });
+    }
+
+    if (method === "GET") {
+      const urlObj = new URL(trimmedUrl);
+      if (action) urlObj.searchParams.set("action", action);
+      if (payload && typeof payload === "object") {
+        for (const [k, v] of Object.entries(payload)) {
+          if (v !== undefined && v !== null) {
+            urlObj.searchParams.set(k, String(v));
+          }
+        }
+      }
+
+      const response = await fetch(urlObj.toString(), {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        redirect: "follow",
+      });
+
+      const text = await response.text();
+      // Detect Google Accounts login redirect (Who has access: Only myself misconfiguration)
+      if (
+        text.includes("ServiceLogin") ||
+        text.includes("accounts.google.com") ||
+        text.includes("Sign in - Google Accounts") ||
+        text.includes("Gaya masuk lama")
+      ) {
+        return res.status(401).json({
+          success: false,
+          error: "Akses Google Apps Script terkunci (meminta login Google). Pastikan saat Deploy Web App, opsi 'Who has access' (Siapa yang memiliki akses) diatur ke 'Anyone' (Siapa saja), bukan 'Only myself'.",
+        });
+      }
+
+      try {
+        const data = JSON.parse(text);
+        return res.json(data);
+      } catch {
+        return res.status(502).json({
+          success: false,
+          error: "Respon bukan format JSON yang valid dari Google Apps Script.",
+          raw: text.slice(0, 400),
+        });
+      }
+    }
+
+    // Method POST
+    const bodyData = JSON.stringify({ action, ...payload });
+    const response = await fetch(trimmedUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: bodyData,
+      redirect: "follow",
+    });
+
+    const text = await response.text();
+    // Detect Google Accounts login redirect
+    if (
+      text.includes("ServiceLogin") ||
+      text.includes("accounts.google.com") ||
+      text.includes("Sign in - Google Accounts") ||
+      text.includes("Gaya masuk lama")
+    ) {
+      return res.status(401).json({
+        success: false,
+        error: "Akses Google Apps Script terkunci (meminta login Google). Pastikan saat Deploy Web App, opsi 'Who has access' (Siapa yang memiliki akses) diatur ke 'Anyone' (Siapa saja), bukan 'Only myself'.",
+      });
+    }
+
+    try {
+      const data = JSON.parse(text);
+      return res.json(data);
+    } catch {
+      return res.status(502).json({
+        success: false,
+        error: "Respon dari Google Apps Script bukan JSON yang valid.",
+        raw: text.slice(0, 400),
+      });
+    }
+  } catch (err: any) {
+    console.error("[GAS Proxy Server Error]:", err);
+    return res.status(500).json({
+      success: false,
+      error: `Koneksi ke Google Apps Script gagal: ${err?.message || String(err)}`,
+    });
+  }
+});
+
 // Retrieve shared exam package by code or ID
 const handleGetExamByCode = async (req: any, res: any) => {
   const code = (req.params.code || req.params.codeOrId || "").trim();

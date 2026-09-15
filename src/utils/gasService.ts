@@ -60,15 +60,46 @@ export function subscribeGasConfig(cb: GasConfigListener): () => void {
 }
 
 /**
- * Call GAS Web App endpoint via JSONP/POST/GET or proxy
+ * Call GAS Web App endpoint via Server-Side Proxy (/api/gas/proxy) with direct fallback
+ * This eliminates all browser CORS preflight restrictions, cross-origin 302 redirects, and iframe blocks.
  */
-async function callGasEndpoint(action: string, payload: any = {}, method: "GET" | "POST" = "POST"): Promise<any> {
-  const url = cachedGasConfig.webAppUrl?.trim();
+async function callGasEndpoint(
+  action: string,
+  payload: any = {},
+  method: "GET" | "POST" = "POST",
+  overrideUrl?: string
+): Promise<any> {
+  const url = (overrideUrl || cachedGasConfig.webAppUrl)?.trim();
   if (!url) {
     throw new Error("URL Web App Google Apps Script belum dikonfigurasi. Silakan atur di menu 'Integrasi Google Apps Script & Sheets'.");
   }
 
-  // If method is GET, append query parameters
+  // 1. Prioritaskan pemanggilan melalui Server Proxy (/api/gas/proxy)
+  // Server-side call tidak terhalang oleh CORS browser, redirect cross-origin 302, maupun batasan iframe
+  try {
+    const proxyRes = await fetch("/api/gas/proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, action, payload, method }),
+    });
+
+    const data = await proxyRes.json().catch(() => null);
+    if (proxyRes.ok && data) {
+      return data;
+    }
+
+    if (data && data.error) {
+      throw new Error(data.error);
+    }
+  } catch (proxyErr: any) {
+    // Jika error spesifik seperti hak akses / login dibutuhkan, langsung teruskan pesannya ke user
+    if (proxyErr.message && !proxyErr.message.includes("Failed to fetch")) {
+      throw proxyErr;
+    }
+    console.warn("[GAS] Proxy server tidak dapat diakses, mencoba direct fetch fallback:", proxyErr);
+  }
+
+  // 2. Fallback direct browser fetch (jika server proxy offline / static host)
   if (method === "GET") {
     const urlObj = new URL(url);
     urlObj.searchParams.set("action", action);
@@ -94,7 +125,7 @@ async function callGasEndpoint(action: string, payload: any = {}, method: "GET" 
   const res = await fetch(url, {
     method: "POST",
     mode: "cors",
-    headers: { "Content-Type": "text/plain;charset=utf-8" }, // text/plain prevents CORS preflight issues on Google Apps Script
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: bodyData,
   });
 
@@ -114,20 +145,8 @@ export async function testGasConnection(customUrl?: string): Promise<{ success: 
   }
 
   try {
-    const testUrl = new URL(targetUrl);
-    testUrl.searchParams.set("action", "ping");
+    const data = await callGasEndpoint("ping", {}, "GET", targetUrl);
 
-    const res = await fetch(testUrl.toString(), {
-      method: "GET",
-      mode: "cors",
-      headers: { Accept: "application/json" },
-    });
-
-    if (!res.ok) {
-      throw new Error(`Status respon: ${res.status} ${res.statusText}`);
-    }
-
-    const data = await res.json();
     if (data && data.success) {
       saveGasConfig({
         webAppUrl: targetUrl,
@@ -142,7 +161,7 @@ export async function testGasConnection(customUrl?: string): Promise<{ success: 
       };
     }
 
-    throw new Error(data.error || "Respon dari Google Apps Script tidak valid.");
+    throw new Error(data?.error || "Respon dari Google Apps Script tidak valid.");
   } catch (err: any) {
     saveGasConfig({ connected: false });
     return {
