@@ -34,7 +34,7 @@ import { ExamPackage, SchoolProfile, StudentExamSession, StudentTokenItem } from
 import { exportGradebookToExcel, exportItemAnalysisToExcel } from "../utils/sheetExport";
 import { generateStudentExamPdfReport, generateBatchStudentsPdfReport } from "../utils/studentPdfReport";
 import { deduplicateStudentTokens } from "../utils/tokenValidator";
-import { fetchExamSessions, reconcileAndMergeExamSessions } from "../utils/firestoreService";
+import { fetchExamSessions, reconcileAndMergeExamSessions, subscribeToExamSessions } from "../utils/firestoreService";
 import { getStudentTokens } from "../utils/storage";
 import { subscribeToLiveSessions } from "../utils/liveSync";
 import { LiveStudentEditModal, StudentRowItem } from "./LiveStudentEditModal";
@@ -238,7 +238,14 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
     // 2. Initial immediate sync from cloud / server
     handleSyncCloud();
 
-    // 3. Periodic heartbeat poll every 3 seconds
+    // 3. Realtime Firestore snapshot listener
+    const unsubscribeFirestore = subscribeToExamSessions(exam.code || exam.id, (remoteSessions) => {
+      if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
+        onUpdateHistory(remoteSessions);
+      }
+    });
+
+    // 4. Periodic fallback poll every 4 seconds
     const interval = setInterval(() => {
       fetchExamSessions(exam.id, exam.code)
         .then((remoteSessions) => {
@@ -247,10 +254,11 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
           }
         })
         .catch(() => {});
-    }, 3000);
+    }, 4000);
 
     return () => {
       unsubscribeLive();
+      unsubscribeFirestore();
       clearInterval(interval);
     };
   }, [exam.id, exam.code]);

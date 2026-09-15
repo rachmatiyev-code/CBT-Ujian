@@ -47,5 +47,19 @@
       },
       "required": ["examId", "code", "title"]
     }
+  },
+  "firestore": {
+    "/exams/{examId}": {
+      "schema": "exams",
+      "description": "Collection of exam packages containing questions, configuration, and settings"
+    },
+    "/examCodes/{code}": {
+      "schema": "examCodes",
+      "description": "Index of exam codes for quick lookup"
+    },
+    "/sessions/{sessionId}": {
+      "schema": "sessions",
+      "description": "Live and submitted student exam sessions"
+    }
   }
 }

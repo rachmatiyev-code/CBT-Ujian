@@ -372,11 +372,15 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
     // 2. If not found or no valid token, try public Google Drive web download endpoints
     if (!examData) {
       const publicUrls = [
+        `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`,
         `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
         `https://drive.google.com/uc?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
         `https://drive.google.com/uc?id=${encodeURIComponent(fileId)}&export=download`,
         `https://docs.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`,
       ];
+
+      let isRestricted = false;
+      let restrictionMessage = "";
 
       for (const url of publicUrls) {
         try {
@@ -388,12 +392,33 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
             },
           });
 
+          if (driveRes.status === 403) {
+            isRestricted = true;
+            restrictionMessage =
+              "Akses ditolak oleh Google Drive (403 Forbidden). Kemungkinan file naskah soal berada di akun @belajar.id yang dibatasi oleh kebijakan organisasi atau belum diubah menjadi 'Siapa saja yang memiliki link'.";
+          }
+
           if (driveRes.ok) {
             const text = await driveRes.text();
+
+            // Check if Google Drive returned an HTML login redirect (typical with Belajar.id domain restrictions)
+            if (
+              text.includes("accounts.google.com/ServiceLogin") ||
+              text.includes("accounts.google.com/v3/signin") ||
+              text.includes("You need access") ||
+              text.includes("Perlu izin") ||
+              text.includes("Akses ditolak")
+            ) {
+              isRestricted = true;
+              restrictionMessage =
+                "File Google Drive meminta login akun organisasi (kebijakan domain @belajar.id). File tidak dapat diakses secara publik oleh browser siswa atau server.";
+            }
+
             try {
               const parsed = JSON.parse(text);
               if (parsed && (Array.isArray(parsed.questions) || Array.isArray(parsed.items))) {
                 examData = parsed;
+                isRestricted = false;
                 break;
               }
             } catch {
@@ -416,6 +441,7 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
                     const confirmParsed = JSON.parse(confirmText);
                     if (confirmParsed && Array.isArray(confirmParsed.questions)) {
                       examData = confirmParsed;
+                      isRestricted = false;
                       break;
                     }
                   }
@@ -426,6 +452,27 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
         } catch (err) {
           lastError = err;
         }
+      }
+
+      if (!examData && isRestricted) {
+        // Fallback: check if any exam in sharedExamsRegistry has this gdriveFileId
+        let fallbackShare: any = null;
+        sharedExamsRegistry.forEach((val) => {
+          if (val?.exam?.gdriveFileId === fileId || val?.gdriveFileId === fileId) {
+            fallbackShare = val.exam;
+          }
+        });
+        if (fallbackShare) {
+          return res.json({ success: true, exam: fallbackShare, source: "sharedRegistry" });
+        }
+
+        return res.status(403).json({
+          success: false,
+          isDomainRestricted: true,
+          message:
+            restrictionMessage ||
+            `Akses naskah soal Google Drive (${fileId}) ditolak. Kebijakan akun @belajar.id membatasi akses di luar domain organisasi. Harap gunakan akun Gmail pribadi (@gmail.com) atau gunakan Link Paket Mandiri (Anti-Gagal).`,
+        });
       }
     }
 

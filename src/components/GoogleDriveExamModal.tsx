@@ -619,10 +619,22 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
-              <span>
-                💡 <strong>Petunjuk:</strong> Buka file naskah di Google Drive &rarr; klik <strong>Bagikan</strong> &rarr; pastikan setelan akses <strong>"Siapa saja yang memiliki link"</strong> &rarr; Salin Link lalu tempel di sini.
-              </span>
+            <div className="flex flex-col gap-1.5 text-[11px] text-slate-400 pt-0.5 border-t border-slate-800/60 mt-1">
+              <div>
+                💡 <strong>Petunjuk Izin:</strong> Buka file naskah di Google Drive &rarr; klik <strong>Bagikan</strong> &rarr; pastikan setelan akses <strong>"Siapa saja yang memiliki link"</strong> &rarr; Salin Link lalu tempel di sini.
+              </div>
+              <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-200/90 text-[11px] space-y-1">
+                <span className="font-bold flex items-center gap-1.5 text-amber-300">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  Perhatian Khusus Akun @belajar.id:
+                </span>
+                <p className="leading-relaxed">
+                  Akun Google Workspace Kemdikbud (<strong>@belajar.id</strong>) membatasi akses file hanya untuk anggota domain organisasi sekolah. Pengguna di luar domain (atau siswa tanpa login belajar.id) akan terblokir (<em>403 Forbidden / Soal Tidak Ditemukan</em>).
+                </p>
+                <p className="text-slate-300 font-medium">
+                  <strong>Rekomendasi:</strong> Gunakan akun Gmail pribadi (<strong>@gmail.com</strong>) untuk menyimpan naskah ujian publik, atau bagikan naskah via <strong>"Paket Anti-Gagal"</strong> di menu Bagikan Ujian (100% mandiri tanpa Google Drive).
+                </p>
+              </div>
             </div>
           </div>
 

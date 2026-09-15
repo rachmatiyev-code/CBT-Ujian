@@ -22,6 +22,26 @@ export class GoogleDriveAuthError extends Error {
   }
 }
 
+export class GoogleDrivePermissionError extends Error {
+  isDomainRestricted = true;
+  constructor(
+    message = "Akses file naskah soal ditolak oleh Google Drive (403 Forbidden / Belajar.id Domain Restricted). Kebijakan akun @belajar.id membatasi akses file di luar domain organisasi."
+  ) {
+    super(message);
+    this.name = "GoogleDrivePermissionError";
+  }
+}
+
+/**
+ * Formats a direct Google Drive download link for a file ID.
+ * Standard format: https://drive.google.com/uc?export=download&id=FILE_ID
+ */
+export function formatGoogleDriveDirectDownloadUrl(fileId: string): string {
+  if (!fileId) return "";
+  const cleanId = fileId.trim();
+  return `https://drive.google.com/uc?export=download&id=${encodeURIComponent(cleanId)}`;
+}
+
 /**
  * Parses a failed Response from Google Drive API into a user-friendly Error.
  * Automatically clears expired sessions and dispatches auth-expired events.
@@ -55,8 +75,8 @@ export async function parseGoogleDriveError(res: Response, fallbackMsg: string):
     if (rawMsg.toLowerCase().includes("quota") || rawMsg.toLowerCase().includes("rate")) {
       return new Error("Batas kuota akses Google Drive tercapai sementara. Silakan tunggu beberapa saat lagi.");
     }
-    return new Error(
-      "Akses ditolak oleh Google Drive. Pastikan akun memiliki izin atau bagikan file dengan akses 'Siapa saja yang memiliki link'."
+    return new GoogleDrivePermissionError(
+      "Akses ditolak oleh Google Drive (403 Forbidden / Akun Belajar.id). Jika Anda menggunakan akun @belajar.id, izin file biasanya dibatasi untuk internal organisasi sekolah. Harap pindahkan file ke akun Gmail pribadi (@gmail.com) atau bagikan dengan Link Paket Mandiri (Anti-Gagal)."
     );
   }
 
@@ -733,6 +753,8 @@ export async function loadExamFromGoogleDrive(
     }
   } catch {}
 
+  let lastPermissionError: string | null = null;
+
   // Tier 2: Try server-side proxy (bypasses CORS, cookie, and Google Workspace restrictions)
   try {
     const proxyHeaders: Record<string, string> = {};
@@ -742,9 +764,23 @@ export async function loadExamFromGoogleDrive(
     let proxyRes = await fetch(`/api/gdrive/exam/${encodeURIComponent(fileId)}`, {
       headers: proxyHeaders,
     });
+
+    if (proxyRes.status === 403) {
+      try {
+        const errData = await proxyRes.json();
+        if (errData?.message) lastPermissionError = errData.message;
+      } catch {}
+    }
+
     // If failed with token, retry proxy without token (public link access)
     if (!proxyRes.ok && accessTokenOrNull) {
       proxyRes = await fetch(`/api/gdrive/exam/${encodeURIComponent(fileId)}`);
+      if (proxyRes.status === 403) {
+        try {
+          const errData = await proxyRes.json();
+          if (errData?.message) lastPermissionError = errData.message;
+        } catch {}
+      }
     }
     if (proxyRes.ok) {
       const data = await proxyRes.json();
@@ -794,6 +830,9 @@ export async function loadExamFromGoogleDrive(
         json = await res.json();
       } else if (res.status === 401) {
         notifyAuthExpired();
+      } else if (res.status === 403) {
+        lastPermissionError =
+          "Akses ditolak oleh Google Drive (403 Forbidden). Akun @belajar.id kemungkinan membatasi pembagian file di luar domain.";
       }
     } catch (e) {
       console.warn("Direct Drive API fetch error:", e);
@@ -804,6 +843,12 @@ export async function loadExamFromGoogleDrive(
   if (!json || !Array.isArray(json.questions)) {
     try {
       const fallbackProxy = await fetch(`/api/gdrive/exam/${encodeURIComponent(fileId)}`);
+      if (fallbackProxy.status === 403) {
+        try {
+          const errData = await fallbackProxy.json();
+          if (errData?.message) lastPermissionError = errData.message;
+        } catch {}
+      }
       if (fallbackProxy.ok) {
         const proxyData = await fallbackProxy.json();
         if (proxyData.success && proxyData.exam && Array.isArray(proxyData.exam.questions)) {
@@ -814,8 +859,11 @@ export async function loadExamFromGoogleDrive(
   }
 
   if (!json || !Array.isArray(json.questions)) {
+    if (lastPermissionError) {
+      throw new GoogleDrivePermissionError(lastPermissionError);
+    }
     throw new Error(
-      "Gagal memuat naskah soal dari Google Drive. Pastikan file dibagikan dengan akses 'Siapa saja yang memiliki link' atau minta guru membagikan naskah kembali."
+      "Gagal memuat naskah soal dari Google Drive. Pastikan file dibagikan dengan akses 'Siapa saja yang memiliki link' atau gunakan akun Gmail biasa (@gmail.com) jika akun @belajar.id dibatasi oleh kebijakan sekolah."
     );
   }
 

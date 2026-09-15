@@ -32,7 +32,7 @@ import {
 import { getStudentTokens, saveExamPackages, getExamPackages } from "../utils/storage";
 import { deduplicateStudentTokens } from "../utils/tokenValidator";
 import { syncExamToGAS } from "../utils/gasService";
-import { saveExamToGoogleDrive, formatExamDriveFileName } from "../utils/googleDrive";
+import { saveExamToGoogleDrive, formatExamDriveFileName, formatGoogleDriveDirectDownloadUrl } from "../utils/googleDrive";
 import {
   getCachedAccessToken,
   googleSignIn,
@@ -628,6 +628,37 @@ export const DirectStudentShareModal: React.FC<DirectStudentShareModalProps> = (
                       <span>Buka File di Drive</span>
                     </a>
                   )}
+
+                  {currentExam.gdriveFileId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const directUrl = formatGoogleDriveDirectDownloadUrl(currentExam.gdriveFileId!);
+                        navigator.clipboard.writeText(directUrl);
+                        handleCopyLink(directUrl);
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 font-semibold text-[11px] flex items-center gap-1 border border-amber-500/30 cursor-pointer"
+                      title="Salin Link Direct Download (drive.google.com/uc?export=download&id=...)"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>Salin Direct Download URL</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Catatan Penting Akun Belajar.id */}
+                <div className="p-3 bg-black/40 border border-amber-500/30 rounded-xl space-y-1.5 text-[11px]">
+                  <div className="flex items-center gap-1.5 text-amber-300 font-bold">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>Perhatian Pengguna Akun @belajar.id:</span>
+                  </div>
+                  <p className="text-slate-300 leading-relaxed">
+                    Google Workspace Pendidikan (<strong>@belajar.id</strong>) membatasi akses file hanya untuk domain sekolah. Jika link dibuka oleh siswa umum/tanpa akun belajar.id, Google akan memblokir (<em>403 Forbidden</em>).
+                  </p>
+                  <div className="text-slate-400 space-y-1 pt-0.5">
+                    <div>👉 <strong>Solusi 1:</strong> Simpan file menggunakan akun Gmail pribadi (<strong>@gmail.com</strong>) dengan akses <em>"Siapa saja yang memiliki link"</em>.</div>
+                    <div>👉 <strong>Solusi 2 (Rekomendasi Utama):</strong> Gunakan tab <strong>"Paket Anti-Gagal"</strong> di atas. Link tersebut 100% mandiri dan tidak terpengaruh kebijakan privasi Google Drive.</div>
+                  </div>
                 </div>
               </div>
             )}

@@ -24,7 +24,9 @@ import {
   Search,
   ArrowLeft,
   Link2,
-  FlaskConical
+  FlaskConical,
+  Info,
+  ShieldCheck
 } from "lucide-react";
 import {
   ExamPackage,
@@ -70,7 +72,10 @@ import {
   fetchExamSessions,
   deleteStudentSessionFromFirestore,
   batchDeleteStudentSessionsFromFirestore,
-  reconcileAndMergeExamSessions
+  reconcileAndMergeExamSessions,
+  syncExamToFirestore,
+  fetchExamFromFirestore,
+  syncStudentSessionToFirestore
 } from "./utils/firestoreService";
 
 export default function App() {
@@ -296,6 +301,9 @@ export default function App() {
     setIsFetchingRemoteExam(true);
     setRemoteFetchError(null);
 
+    let lastDriveError: string | null = null;
+    let isDomainRestricted = false;
+
     try {
       // 1. Direct check in current state or localStorage
       const allLocal = getExamPackages();
@@ -316,8 +324,36 @@ export default function App() {
             applyLoadedRemoteExam(driveExam, driveExam.sessionToken);
             return;
           }
-        } catch (driveErr) {
+        } catch (driveErr: any) {
           console.warn("Direct Drive ID load attempt:", driveErr);
+          lastDriveError = driveErr?.message || null;
+          if (
+            driveErr?.isDomainRestricted ||
+            driveErr?.name === "GoogleDrivePermissionError" ||
+            driveErr?.message?.toLowerCase().includes("belajar.id") ||
+            driveErr?.message?.toLowerCase().includes("403") ||
+            driveErr?.message?.toLowerCase().includes("ditolak")
+          ) {
+            isDomainRestricted = true;
+          }
+        }
+      }
+
+      // 1.5. Query Firebase Firestore Cloud Database (project ungoogly-rigging-s6rpq)
+      if (code || driveId) {
+        try {
+          const firestoreResult = await fetchExamFromFirestore(code || driveId);
+          if (
+            firestoreResult &&
+            firestoreResult.exam &&
+            Array.isArray(firestoreResult.exam.questions) &&
+            firestoreResult.exam.questions.length > 0
+          ) {
+            applyLoadedRemoteExam(firestoreResult.exam, firestoreResult.token, firestoreResult.tokens);
+            return;
+          }
+        } catch (fErr) {
+          console.warn("Firestore remote exam fetch attempt:", fErr);
         }
       }
 
@@ -357,23 +393,38 @@ export default function App() {
             applyLoadedRemoteExam(driveExam, driveExam.sessionToken);
             return;
           }
-        } catch (driveErr) {
-          console.warn("Direct Drive ID load attempt:", driveErr);
+        } catch (driveErr: any) {
+          console.warn("Direct Drive ID load attempt (second attempt):", driveErr);
+          if (driveErr?.isDomainRestricted || driveErr?.name === "GoogleDrivePermissionError") {
+            isDomainRestricted = true;
+            lastDriveError = driveErr.message;
+          }
         }
       }
 
       // 5. Search Google Drive by Code / Filename (Backup_Data_Aplikasi)
       if (code) {
-        const driveResult = await findAndLoadExamFromDriveByCode(code);
-        if (driveResult && Array.isArray(driveResult.questions) && driveResult.questions.length > 0) {
-          applyLoadedRemoteExam(driveResult, driveResult.sessionToken);
-          return;
+        try {
+          const driveResult = await findAndLoadExamFromDriveByCode(code);
+          if (driveResult && Array.isArray(driveResult.questions) && driveResult.questions.length > 0) {
+            applyLoadedRemoteExam(driveResult, driveResult.sessionToken);
+            return;
+          }
+        } catch (codeDriveErr: any) {
+          if (codeDriveErr?.isDomainRestricted || codeDriveErr?.name === "GoogleDrivePermissionError") {
+            isDomainRestricted = true;
+            lastDriveError = codeDriveErr.message;
+          }
         }
       }
 
-      setRemoteFetchError(
-        `Naskah soal dengan kode "${code || driveId}" tidak ditemukan di server CBT aplikasi atau Google Drive. Silakan periksa kembali kode soal atau minta guru membagikan file/link naskah.`
-      );
+      if (isDomainRestricted && lastDriveError) {
+        setRemoteFetchError(lastDriveError);
+      } else {
+        setRemoteFetchError(
+          `Naskah soal dengan kode "${code || driveId}" tidak ditemukan di server CBT aplikasi atau Google Drive. Silakan periksa kembali kode soal atau minta guru membagikan file/link naskah.`
+        );
+      }
     } catch (err: any) {
       console.warn("Could not fetch remote exam:", err);
       setRemoteFetchError("Gagal menghubungi server ujian. Pastikan perangkat Anda terhubung ke internet.");
@@ -616,11 +667,12 @@ export default function App() {
     }
   }, [activeTab, activeExam?.code, isTeacherTrial]);
 
-  // Automatically broadcast and sync active exam to server & Google Sheets for 2-way multi-device discovery
+  // Automatically broadcast and sync active exam to Firestore, server & Google Sheets for 2-way multi-device discovery
   // CRITICAL SECURITY RULE: Only run for teacher workspace! NEVER for student devices!
   useEffect(() => {
     if (isDirectStudentMode) return;
     if (activeExam?.id && activeExam?.code) {
+      syncExamToFirestore(activeExam, activeExamTokens).catch(() => {});
       syncExamToGAS(activeExam, activeExamTokens).catch(() => {});
       fetch("/api/exams/share", {
         method: "POST",
@@ -634,11 +686,12 @@ export default function App() {
     }
   }, [isDirectStudentMode, activeExam?.id, activeExam?.code, activeExam?.updatedAt, activeExamTokens]);
 
-  // Auto-sync all teacher exams to Google Sheets and Server Share Registry on teacher dashboard load
+  // Auto-sync all teacher exams to Firestore, Google Sheets and Server Share Registry on teacher dashboard load
   useEffect(() => {
     if (isDirectStudentMode || exams.length === 0) return;
     exams.forEach((ex) => {
       if (ex && ex.id && Array.isArray(ex.questions) && ex.questions.length > 0) {
+        syncExamToFirestore(ex, tokens).catch(() => {});
         syncExamToGAS(ex, tokens).catch(() => {});
         fetch("/api/exams/share", {
           method: "POST",
@@ -796,6 +849,9 @@ export default function App() {
       : [updated, ...exams];
     setExamsState(updatedExams);
     saveExamPackages(updatedExams);
+    syncExamToFirestore(updated, tokens).catch((err) =>
+      console.warn("Firestore sync error:", err)
+    );
     syncExamToGAS(updated, tokens).catch((err) =>
       console.warn("GAS sync error:", err)
     );
@@ -894,6 +950,9 @@ export default function App() {
     setActiveSessionState(session);
     saveActiveStudentSession(session);
     broadcastLiveSession(session);
+    syncStudentSessionToFirestore(session).catch((err) =>
+      console.warn("Firestore session sync error:", err)
+    );
     syncStudentSessionToGAS(session).catch((err) =>
       console.warn("GAS session sync error:", err)
     );
@@ -915,6 +974,9 @@ export default function App() {
     setActiveSessionState(finalizedSession);
     saveActiveStudentSession(finalizedSession);
     broadcastLiveSession(finalizedSession);
+    syncStudentSessionToFirestore(finalizedSession, true).catch((err) =>
+      console.warn("Firestore session submit sync error:", err)
+    );
     syncStudentSessionToGAS(finalizedSession).catch((err) =>
       console.warn("GAS session submit sync error:", err)
     );
@@ -1324,6 +1386,35 @@ export default function App() {
               </div>
             </div>
 
+            {/* Diagnostic Alert Khusus Akun Belajar.id & Izin Google Drive */}
+            {remoteFetchError &&
+              (remoteFetchError.toLowerCase().includes("belajar.id") ||
+                remoteFetchError.toLowerCase().includes("403") ||
+                remoteFetchError.toLowerCase().includes("ditolak") ||
+                remoteFetchError.toLowerCase().includes("restricted")) && (
+                <div className="p-4 bg-rose-950/40 border border-rose-500/40 rounded-2xl text-xs space-y-2.5 animate-in fade-in">
+                  <div className="flex items-center gap-2 font-bold text-rose-300">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>Kendala Izin Akun @belajar.id & Google Drive</span>
+                  </div>
+                  <p className="text-[11px] text-rose-200 leading-relaxed">
+                    Google Drive dari akun <strong>@belajar.id</strong> secara default membatasi akses file hanya untuk pengguna di dalam domain organisasi (Domain Access Control). Server publik atau siswa umum akan menerima pesan <em>403 Forbidden</em> atau <em>Soal tidak ditemukan</em>.
+                  </p>
+                  <div className="p-3 bg-black/40 rounded-xl border border-rose-900/50 space-y-1.5 text-[11px] text-slate-300">
+                    <strong className="text-white block font-semibold">Langkah Perbaikan untuk Guru:</strong>
+                    <div>
+                      1. <strong className="text-emerald-300">Gunakan Akun Gmail Biasa (@gmail.com):</strong> Pindahkan file naskah soal ke akun Gmail pribadi, lalu ubah izin akses menjadi <em>"Siapa saja yang memiliki link"</em> &rarr; <em>"Pelihat"</em>.
+                    </div>
+                    <div>
+                      2. <strong className="text-cyan-300">Gunakan Format Direct Download Link:</strong> Salin format link langsung: <code className="text-amber-300 font-mono text-[10px]">https://drive.google.com/uc?export=download&id=ID_FILE</code>.
+                    </div>
+                    <div>
+                      3. <strong className="text-amber-300">Solusi Terbaik (Paket Anti-Gagal):</strong> Buka menu <em>Bagikan Ujian</em> di aplikasi guru, lalu pilih tab <em>"Paket Anti-Gagal"</em>. Link ini 100% langsung memuat soal tanpa memerlukan Google Drive.
+                    </div>
+                  </div>
+                </div>
+              )}
+
             {/* Input Manual Kode Soal atau Link Google Drive */}
             <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 space-y-2.5">
               <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
@@ -1387,7 +1478,7 @@ export default function App() {
                 </button>
               </div>
               <p className="text-[10px] text-slate-400">
-                💡 Anda dapat mengetik kode ujian (misal: <code>PP-01</code>), menempel link paket anti-gagal, atau link Google Drive.
+                💡 Anda dapat mengetik kode ujian (misal: <code>PP-01</code>), menempel link paket anti-gagal, atau link direct download Google Drive.
               </p>
             </div>
 
@@ -1415,10 +1506,13 @@ export default function App() {
             </div>
 
             {/* Info untuk Guru */}
-            <div className="p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/20 text-[11px] text-slate-400 space-y-1">
-              <strong className="text-indigo-300 block">💡 Petunjuk untuk Guru:</strong>
-              <p>
-                Jika naskah soal belum muncul otomatis di perangkat siswa, Anda dapat membagikan <strong>"Link Google Drive (Alternatif)"</strong> dari menu <strong>Bagikan Ujian</strong>. Siswa dapat langsung menempelkan link Google Drive tersebut di kolom pencarian di atas untuk mulai ujian.
+            <div className="p-3.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/20 text-[11px] text-slate-300 space-y-1.5">
+              <strong className="text-indigo-300 flex items-center gap-1.5 font-semibold">
+                <Info className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Petunjuk untuk Guru & Pengawas:</span>
+              </strong>
+              <p className="text-slate-400 leading-relaxed">
+                Jika naskah soal belum muncul otomatis di perangkat siswa, Anda dapat membagikan <strong>"Paket Anti-Gagal"</strong> dari menu <strong>Bagikan Ujian</strong>. Tautan tersebut bebas dari kendala izin Google Drive atau akun @belajar.id.
               </p>
             </div>
 
