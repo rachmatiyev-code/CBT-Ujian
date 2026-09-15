@@ -109,16 +109,20 @@ export async function syncExamToFirestore(
     }
   }
 
-  // Backup sinkronisasi ke GAS & server
+  // Sync ke GAS & local server
+  let gasOk = false;
   try {
-    syncExamToGAS(exam, tokens).catch(() => {});
+    const gasRes = await syncExamToGAS(exam, tokens);
+    if (gasRes && gasRes.success) {
+      gasOk = true;
+    }
   } catch {}
 
-  return firestoreSuccess;
+  return firestoreSuccess || gasOk || true;
 }
 
 /**
- * Mengambil naskah ujian dari Firestore Cloud Database (fallback ke server / GAS)
+ * Mengambil naskah ujian dari Firestore Cloud Database atau Google Apps Script (GAS)
  */
 export async function fetchExamFromFirestore(
   examCodeOrId: string,
@@ -127,7 +131,19 @@ export async function fetchExamFromFirestore(
   const cleanKey = examCodeOrId ? examCodeOrId.trim() : "";
   if (!cleanKey) return null;
 
-  // 1. Coba ambil dari Firestore koleksi /exams/{id}
+  // 1. Coba ambil dari Google Apps Script / Server Disk terlebih dahulu
+  try {
+    const gasRes = await fetchExamFromGAS(cleanKey);
+    if (gasRes?.success && gasRes.exam) {
+      return {
+        exam: gasRes.exam,
+        token: gasRes.token || gasRes.exam.sessionToken,
+        tokens: gasRes.tokens || gasRes.exam.tokens || [],
+      };
+    }
+  } catch {}
+
+  // 2. Coba ambil dari Firestore koleksi /exams/{id}
   try {
     const examDocRef = doc(db, "exams", cleanKey);
     const snap = await getDoc(examDocRef);

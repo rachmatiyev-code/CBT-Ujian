@@ -41,6 +41,9 @@ import {
   initializeGasDatabase,
   getGasBackendCode,
   GasConfig,
+  backupAppToGAS,
+  listAppBackupsFromGAS,
+  restoreAppBackupFromGAS,
 } from "../utils/gasService";
 import {
   GOOGLE_DRIVE_BACKUP_FOLDER_NAME,
@@ -132,7 +135,84 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
   const [showClientIdConfig, setShowClientIdConfig] = useState(false);
   const [clientIdSavedMsg, setClientIdSavedMsg] = useState(false);
 
+  // Cloud Backup via Google Apps Script (DriveApp - Zero OAuth)
+  const [isBackingUpGAS, setIsBackingUpGAS] = useState(false);
+  const [gasBackups, setGasBackups] = useState<any[]>([]);
+  const [isLoadingGasBackups, setIsLoadingGasBackups] = useState(false);
+  const [isRestoringGAS, setIsRestoringGAS] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleBackupToGasDrive = async () => {
+    if (!gasConfig.webAppUrl) {
+      setDriveError("URL Web App Google Apps Script belum diatur. Silakan simpan URL Web App terlebih dahulu.");
+      return;
+    }
+    setIsBackingUpGAS(true);
+    setDriveError(null);
+    setDriveSuccessMsg(null);
+    try {
+      const backupData = createFullAppBackup();
+      const res = await backupAppToGAS(backupData);
+      if (res && res.success) {
+        setDriveSuccessMsg(res.message || "Cadangan berhasil disimpan langsung ke Google Drive via Google Apps Script!");
+        handleLoadGasBackups();
+      } else {
+        throw new Error(res?.message || "Gagal mencadangkan ke Google Drive via Google Apps Script.");
+      }
+    } catch (err: any) {
+      setDriveError(`Gagal backup via Apps Script: ${err?.message || String(err)}`);
+    } finally {
+      setIsBackingUpGAS(false);
+    }
+  };
+
+  const handleLoadGasBackups = async () => {
+    if (!gasConfig.webAppUrl) return;
+    setIsLoadingGasBackups(true);
+    try {
+      const res = await listAppBackupsFromGAS();
+      if (res && res.success && Array.isArray(res.backups)) {
+        setGasBackups(res.backups);
+      }
+    } catch (err) {
+      console.warn("Gagal memuat daftar backup GAS:", err);
+    } finally {
+      setIsLoadingGasBackups(false);
+    }
+  };
+
+  const handleRestoreFromGasDrive = async (fileId: string, fileName: string) => {
+    if (!confirm(`Pulihkan seluruh data aplikasi dari file cadangan '${fileName}'? Data saat ini di browser akan ditimpa dengan data ini.`)) {
+      return;
+    }
+    setIsRestoringGAS(fileId);
+    setDriveError(null);
+    try {
+      const res = await restoreAppBackupFromGAS(fileId);
+      if (res && res.success && res.data) {
+        const ok = restoreFullAppBackup(res.data);
+        if (ok) {
+          onDataRestored();
+          setDriveSuccessMsg(`Data berhasil dipulihkan dari '${fileName}'!`);
+        } else {
+          throw new Error("Format berkas backup tidak kompatibel.");
+        }
+      } else {
+        throw new Error("Gagal mengunduh file cadangan dari Google Drive.");
+      }
+    } catch (err: any) {
+      setDriveError(`Gagal pemulihan via Apps Script: ${err?.message || String(err)}`);
+    } finally {
+      setIsRestoringGAS(null);
+    }
+  };
+
+  useEffect(() => {
+    if (gasConfig.webAppUrl && gasConfig.connected) {
+      handleLoadGasBackups();
+    }
+  }, [gasConfig.webAppUrl, gasConfig.connected]);
 
   const handleSaveGoogleClientId = () => {
     setOAuthClientId(googleClientIdInput.trim());
@@ -472,32 +552,33 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
       {/* Top Banner */}
       <div className="bg-[#121214] rounded-2xl p-6 border border-slate-800 shadow-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 text-indigo-400 font-medium text-xs">
-            <Cloud className="w-4 h-4" />
-            <span>Manajemen Penyimpanan & Sinkronisasi Cloud</span>
+          <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
+            <Sparkles className="w-4 h-4" />
+            <span>Arsitektur Bebas Firebase & Google Cloud Console (OAuth)</span>
           </div>
-          <h2 className="text-xl sm:text-2xl font-bold text-white mt-1">Backup & Restore Google Drive</h2>
-          <p className="text-xs text-slate-400 mt-1">
-            Simpan otomatis seluruh bank naskah soal, rekap penilaian siswa, dan token ke folder khusus Google Drive.
+          <h2 className="text-xl sm:text-2xl font-bold text-white mt-1">Database Google Sheets & Cloud Backup</h2>
+          <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+            Aplikasi berjalan 100% menggunakan Google Apps Script (GAS) & Google Sheets untuk menyimpan bank soal, token ujian, rekap nilai siswa, serta cadangan Drive tanpa ketergantungan Firebase maupun OAuth.
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={handleUploadToGoogleDrive}
-            disabled={isSyncingDrive}
+            onClick={handleBackupToGasDrive}
+            disabled={isBackingUpGAS || !gasConfig.webAppUrl}
             className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-emerald-950 cursor-pointer disabled:opacity-50"
+            title={!gasConfig.webAppUrl ? "Isi URL Web App Apps Script terlebih dahulu" : "Simpan backup ke Google Drive via GAS"}
           >
-            <CloudUpload className="w-4 h-4" />
-            <span>{isSyncingDrive ? "Menyimpan ke Drive..." : "Backup ke Google Drive"}</span>
+            <CloudUpload className={`w-4 h-4 ${isBackingUpGAS ? "animate-spin" : ""}`} />
+            <span>{isBackingUpGAS ? "Menyimpan ke Drive..." : "Backup ke Google Drive (GAS)"}</span>
           </button>
 
           <button
             onClick={handleDownloadBackupFile}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-indigo-950 cursor-pointer"
+            className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition-all cursor-pointer"
           >
-            <Download className="w-4 h-4" />
-            <span>Unduh File JSON</span>
+            <Download className="w-4 h-4 text-indigo-400" />
+            <span>Unduh File JSON (Offline)</span>
           </button>
         </div>
       </div>
@@ -512,8 +593,15 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-base font-bold text-white">Database Utama Google Sheets & Apps Script (GAS)</h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Backend Aktif
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  gasConfig.connected
+                    ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                    : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                }`}>
+                  {gasConfig.connected ? "● Terhubung ke Google Sheets" : "○ Belum Terhubung"}
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  100% Bebas Firebase & OAuth
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
@@ -535,12 +623,61 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
             <button
               type="button"
               onClick={handleInitializeGasFolders}
-              disabled={isInitializingGas}
+              disabled={isInitializingGas || !gasConfig.webAppUrl}
               className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-950 cursor-pointer disabled:opacity-50"
             >
               <FolderSync className={`w-4 h-4 ${isInitializingGas ? "animate-spin" : ""}`} />
               <span>{isInitializingGas ? "Menginisialisasi..." : "Inisialisasi Folder & Sheets"}</span>
             </button>
+          </div>
+        </div>
+
+        {/* 4 Langkah Pemasangan Apps Script */}
+        <div className="bg-[#161618] rounded-xl border border-slate-800 p-4 space-y-3">
+          <div className="flex items-center gap-2 text-xs font-bold text-emerald-400">
+            <Sparkles className="w-4 h-4" />
+            <span>4 Langkah Mudah Menghubungkan Google Sheets (Tanpa Firebase & Google Cloud Console):</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="p-3 bg-[#1c1c20] rounded-xl border border-slate-800 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-white text-xs">
+                <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-[10px]">1</span>
+                <span>Siapkan Script</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Klik tombol <strong>"Lihat / Salin Script Code.gs"</strong> di atas dan salin seluruh kodenya.
+              </p>
+            </div>
+
+            <div className="p-3 bg-[#1c1c20] rounded-xl border border-slate-800 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-white text-xs">
+                <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-[10px]">2</span>
+                <span>Pasang di Apps Script</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Buka Google Sheets &gt; <strong>Ekstensi &gt; Apps Script</strong>. Tempel kode, lalu klik <strong>Deploy &gt; Deployment baru</strong> (Jalankan sebagai: Saya, Akses: Siapa saja).
+              </p>
+            </div>
+
+            <div className="p-3 bg-[#1c1c20] rounded-xl border border-slate-800 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-white text-xs">
+                <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-[10px]">3</span>
+                <span>Simpan & Uji Ping</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Salin Web App URL, tempel ke kolom di bawah, klik <strong>Simpan URL</strong>, lalu klik <strong>Uji Koneksi (Ping)</strong> sampai status terhubung.
+              </p>
+            </div>
+
+            <div className="p-3 bg-[#1c1c20] rounded-xl border border-slate-800 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-white text-xs">
+                <span className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center text-[10px]">4</span>
+                <span>Inisialisasi Database</span>
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Klik <strong>Inisialisasi Folder & Sheets</strong>. Google Apps Script akan otomatis membuat 3 folder dan 3 spreadsheet di Google Drive Anda.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -680,6 +817,122 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
                   </div>
                 )}
               </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* GAS DriveApp Backup & Restore Card (Zero OAuth Cloud Backup) */}
+      <div className="bg-[#121214] rounded-2xl p-6 border border-emerald-500/30 shadow-xl space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+              <Cloud className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-base font-bold text-white">Cadangan Google Drive via Apps Script (DriveApp)</h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  100% Bebas OAuth &amp; GCP
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Mencadangkan seluruh naskah soal, token, dan nilai langsung ke folder <strong>'CBT SlideExam Database'</strong> di Google Drive Anda.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleBackupToGasDrive}
+              disabled={isBackingUpGAS || !gasConfig.webAppUrl}
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-950 cursor-pointer disabled:opacity-50"
+            >
+              <CloudUpload className={`w-4 h-4 ${isBackingUpGAS ? "animate-spin" : ""}`} />
+              <span>{isBackingUpGAS ? "Menyimpan ke Drive..." : "Backup ke Google Drive Sekarang"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLoadGasBackups}
+              disabled={isLoadingGasBackups || !gasConfig.webAppUrl}
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isLoadingGasBackups ? "animate-spin" : ""}`} />
+              <span>Segarkan</span>
+            </button>
+          </div>
+        </div>
+
+        {/* List of GAS Drive backups */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+              <FolderOpen className="w-4 h-4 text-emerald-400" />
+              <span>Daftar Berkas Cadangan di Google Drive ({gasBackups.length} Berkas)</span>
+            </span>
+            {gasConfig.webAppUrl ? (
+              <span className="text-[11px] text-emerald-400 font-medium">DriveApp Service Aktif</span>
+            ) : (
+              <span className="text-[11px] text-amber-400">Harap isi URL Web App terlebih dahulu</span>
+            )}
+          </div>
+
+          {isLoadingGasBackups ? (
+            <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+              <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
+              <span>Memeriksa berkas cadangan di Google Drive...</span>
+            </div>
+          ) : gasBackups.length === 0 ? (
+            <div className="p-5 rounded-2xl bg-[#161618] border border-slate-800 text-center text-xs text-slate-400 space-y-1">
+              <div>Belum ada file backup di folder Google Drive via Google Apps Script.</div>
+              <div className="text-[11px] text-slate-500">Klik tombol <strong>"Backup ke Google Drive Sekarang"</strong> untuk menyimpan cadangan pertama.</div>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              {gasBackups.map((b: any) => (
+                <div
+                  key={b.id}
+                  className="p-3.5 bg-[#161618] border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs hover:border-slate-700 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg shrink-0">
+                      <FileJson className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white font-mono text-xs">{b.name}</div>
+                      <div className="text-[11px] text-slate-400 flex items-center gap-3 mt-0.5">
+                        <span>Dibuat: {b.created ? new Date(b.created).toLocaleString("id-ID") : "-"}</span>
+                        {b.size && <span>Ukuran: {(b.size / 1024).toFixed(1)} KB</span>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {b.url && (
+                      <a
+                        href={b.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors"
+                      >
+                        <span>Lihat di Drive</span>
+                        <ExternalLink className="w-3 h-3 text-slate-400" />
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRestoreFromGasDrive(b.id, b.name)}
+                      disabled={isRestoringGAS === b.id}
+                      className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <CloudDownload className={`w-3.5 h-3.5 ${isRestoringGAS === b.id ? "animate-spin" : ""}`} />
+                      <span>{isRestoringGAS === b.id ? "Memulihkan..." : "Pulihkan Cadangan"}</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

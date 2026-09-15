@@ -339,25 +339,20 @@ export default function App() {
         }
       }
 
-      // 1.5. Query Firebase Firestore Cloud Database (project ungoogly-rigging-s6rpq)
-      if (code || driveId) {
+      // 2. Query Google Apps Script / Google Sheets (Folder 'Data Soal' - 100% Bebas Firebase/OAuth)
+      if (code) {
         try {
-          const firestoreResult = await fetchExamFromFirestore(code || driveId);
-          if (
-            firestoreResult &&
-            firestoreResult.exam &&
-            Array.isArray(firestoreResult.exam.questions) &&
-            firestoreResult.exam.questions.length > 0
-          ) {
-            applyLoadedRemoteExam(firestoreResult.exam, firestoreResult.token, firestoreResult.tokens);
+          const gasResult = await fetchExamFromGAS(code);
+          if (gasResult.success && gasResult.exam && Array.isArray(gasResult.exam.questions) && gasResult.exam.questions.length > 0) {
+            applyLoadedRemoteExam(gasResult.exam, gasResult.token, gasResult.tokens);
             return;
           }
-        } catch (fErr) {
-          console.warn("Firestore remote exam fetch attempt:", fErr);
+        } catch (gasErr) {
+          console.warn("GAS remote exam fetch:", gasErr);
         }
       }
 
-      // 2. Query Express backend registry (Server CBT Aplikasi)
+      // 3. Query Express backend registry (Server CBT Aplikasi)
       if (code) {
         let res = await fetch(`/api/exams/by-code/${encodeURIComponent(code)}`);
         if (!res.ok) {
@@ -376,12 +371,21 @@ export default function App() {
         }
       }
 
-      // 3. Query Google Apps Script / Google Sheets (Folder 'Data Soal')
-      if (code) {
-        const gasResult = await fetchExamFromGAS(code);
-        if (gasResult.success && gasResult.exam && Array.isArray(gasResult.exam.questions) && gasResult.exam.questions.length > 0) {
-          applyLoadedRemoteExam(gasResult.exam, gasResult.token, gasResult.tokens);
-          return;
+      // 4. Query Firebase Firestore Cloud Database (project ungoogly-rigging-s6rpq)
+      if (code || driveId) {
+        try {
+          const firestoreResult = await fetchExamFromFirestore(code || driveId);
+          if (
+            firestoreResult &&
+            firestoreResult.exam &&
+            Array.isArray(firestoreResult.exam.questions) &&
+            firestoreResult.exam.questions.length > 0
+          ) {
+            applyLoadedRemoteExam(firestoreResult.exam, firestoreResult.token, firestoreResult.tokens);
+            return;
+          }
+        } catch (fErr) {
+          console.warn("Firestore remote exam fetch attempt:", fErr);
         }
       }
 

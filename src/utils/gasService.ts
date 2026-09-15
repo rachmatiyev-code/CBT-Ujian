@@ -511,6 +511,27 @@ export async function reconcileAndMergeExamSessions(
 }
 
 /**
+ * Simpan backup aplikasi lengkap langsung ke folder master Google Drive via Google Apps Script (tanpa OAuth)
+ */
+export async function backupAppToGAS(backupData: any): Promise<{ success: boolean; fileId?: string; fileName?: string; fileUrl?: string; message: string }> {
+  return await callGasEndpoint("backupApp", { backupData }, "POST");
+}
+
+/**
+ * Ambil daftar file backup di folder master Google Drive via Google Apps Script
+ */
+export async function listAppBackupsFromGAS(): Promise<{ success: boolean; backups: any[] }> {
+  return await callGasEndpoint("listBackups", {}, "GET");
+}
+
+/**
+ * Muat isi file backup dari Google Drive via Google Apps Script
+ */
+export async function restoreAppBackupFromGAS(fileId: string): Promise<{ success: boolean; data: any; fileName?: string }> {
+  return await callGasEndpoint("restoreBackup", { fileId }, "GET");
+}
+
+/**
  * Mendapatkan kode backend Google Apps Script (Code.gs)
  */
 export async function getGasBackendCode(): Promise<string> {

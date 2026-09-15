@@ -84,6 +84,15 @@ function doGet(e) {
         result = getStudentRoster(targetExamCode, targetClass);
         break;
 
+      case "listBackups":
+        result = listAppBackups();
+        break;
+
+      case "restoreBackup":
+        var fileId = e.parameter.fileId || "";
+        result = getAppBackup(fileId);
+        break;
+
       default:
         result = { success: false, error: "Action '" + action + "' tidak dikenali pada GET." };
         break;
@@ -141,6 +150,14 @@ function doPost(e) {
 
       case "batchDeleteSessions":
         result = batchDeleteStudentSessions(payload.sessionIds, payload.examCode);
+        break;
+
+      case "backupApp":
+        result = saveAppBackup(payload.backupData);
+        break;
+
+      case "restoreBackup":
+        result = getAppBackup(payload.fileId);
         break;
 
       default:
@@ -902,3 +919,67 @@ function batchDeleteStudentSessions(sessionIds, examCode) {
 
   return { success: true, deletedCount: deletedCount };
 }
+
+/**
+ * Simpan backup aplikasi lengkap ke folder utama 'CBT SlideExam Database'
+ */
+function saveAppBackup(backupData) {
+  var folders = getSystemFolders();
+  var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT+7", "yyyy-MM-dd_HH-mm-ss");
+  var fileName = "SlideExam_CBT_Backup_" + timestamp + ".json";
+  var jsonContent = typeof backupData === "string" ? backupData : JSON.stringify(backupData, null, 2);
+  var file = folders.master.createFile(fileName, jsonContent, "application/json");
+
+  try {
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  } catch (e) {}
+
+  return {
+    success: true,
+    fileId: file.getId(),
+    fileName: fileName,
+    fileUrl: file.getUrl(),
+    message: "Backup berhasil disimpan di Google Drive: " + fileName
+  };
+}
+
+/**
+ * Ambil daftar file backup di folder utama 'CBT SlideExam Database'
+ */
+function listAppBackups() {
+  var folders = getSystemFolders();
+  var files = folders.master.getFiles();
+  var backups = [];
+  while (files.hasNext()) {
+    var f = files.next();
+    var name = f.getName();
+    if (name.indexOf("SlideExam_CBT_Backup_") === 0 && name.indexOf(".json") !== -1) {
+      backups.push({
+        id: f.getId(),
+        name: name,
+        size: f.getSize(),
+        createdTime: f.getDateCreated().toISOString(),
+        modifiedTime: f.getLastUpdated().toISOString(),
+        webViewLink: f.getUrl()
+      });
+    }
+  }
+
+  backups.sort(function(a, b) {
+    return new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime();
+  });
+
+  return { success: true, backups: backups };
+}
+
+/**
+ * Ambil data backup untuk restore dari Google Drive
+ */
+function getAppBackup(fileId) {
+  if (!fileId) throw new Error("ID File tidak diberikan.");
+  var file = DriveApp.getFileById(fileId);
+  var content = file.getBlob().getDataAsString();
+  var parsed = JSON.parse(content);
+  return { success: true, data: parsed, fileName: file.getName() };
+}
+
