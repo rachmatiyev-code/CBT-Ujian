@@ -49,6 +49,10 @@ export function saveGasConfig(cfg: Partial<GasConfig>): GasConfig {
   return cachedGasConfig;
 }
 
+export function isGasConfigured(): boolean {
+  return Boolean(cachedGasConfig.webAppUrl && cachedGasConfig.webAppUrl.trim().length > 0);
+}
+
 export function subscribeGasConfig(cb: GasConfigListener): () => void {
   configListeners.add(cb);
   cb(cachedGasConfig);
@@ -196,7 +200,7 @@ export async function syncExamToGAS(
   }
 
   // 2. Jika Google Apps Script terhubung, simpan ke Google Sheets & Drive
-  if (cachedGasConfig.connected && cachedGasConfig.webAppUrl) {
+  if (isGasConfigured()) {
     try {
       const gasResult = await callGasEndpoint("syncExam", {
         exam,
@@ -204,7 +208,7 @@ export async function syncExamToGAS(
       });
 
       if (gasResult && gasResult.success) {
-        saveGasConfig({ lastSyncedAt: new Date().toISOString() });
+        saveGasConfig({ connected: true, lastSyncedAt: new Date().toISOString() });
         return {
           success: true,
           message: "Naskah ujian berhasil tersimpan di Google Sheets (Data Soal) & Drive!",
@@ -256,7 +260,7 @@ export async function fetchExamFromGAS(
   }
 
   // 2. Coba langsung dari Google Apps Script Web App (subfolder 'Data Soal')
-  if (cachedGasConfig.connected && cachedGasConfig.webAppUrl) {
+  if (isGasConfigured()) {
     try {
       const gasResult = await callGasEndpoint("getExam", { code: cleanCode }, "GET");
       if (gasResult && gasResult.success && gasResult.exam) {
@@ -287,6 +291,24 @@ export async function fetchExamFromGAS(
     success: false,
     message: `Naskah soal dengan kode '${cleanCode}' tidak ditemukan di Google Sheets maupun server.`,
   };
+}
+
+/**
+ * Ambil daftar seluruh Naskah Ujian yang tersimpan di Google Apps Script (Folder: Data Soal)
+ */
+export async function listExamsFromGAS(): Promise<{ success: boolean; exams?: any[]; message?: string }> {
+  if (!isGasConfigured()) {
+    return { success: false, message: "URL Web App Google Apps Script belum dikonfigurasi." };
+  }
+  try {
+    const res = await callGasEndpoint("listExams", {}, "GET");
+    if (res && res.success) {
+      return { success: true, exams: res.exams || [] };
+    }
+    return { success: false, message: res?.error || "Gagal mengambil daftar naskah dari Google Apps Script." };
+  } catch (err: any) {
+    return { success: false, message: err?.message || "Gagal memuat naskah dari Google Apps Script." };
+  }
 }
 
 /**

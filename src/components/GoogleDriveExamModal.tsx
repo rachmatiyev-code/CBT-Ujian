@@ -8,19 +8,15 @@ import {
   CheckCircle2,
   AlertTriangle,
   RefreshCw,
-  Trash2,
   ExternalLink,
-  BookOpen,
-  GraduationCap,
   Sparkles,
-  Key,
   ShieldCheck,
   Check,
   Copy,
-  LogOut,
-  User as UserIcon,
-  HardDrive,
-  Link2
+  Link2,
+  FileCode,
+  Globe,
+  Database
 } from "lucide-react";
 import { ExamPackage, StudentTokenItem } from "../types";
 import {
@@ -28,31 +24,22 @@ import {
   listExamsFromGoogleDrive,
   saveExamToGoogleDrive,
   loadExamFromGoogleDrive,
-  deleteExamFromGoogleDrive,
-  getOrCreateExamsSubfolder,
   extractGoogleDriveFileId,
 } from "../utils/googleDrive";
 import {
-  googleSignIn,
-  googleSignOut,
-  initAuth,
   getCachedAccessToken,
-  requestGoogleTokenViaGIS,
-  onGoogleAuthExpired,
-  isAuthExpiredError,
   formatGoogleAuthErrorMessage,
-  GoogleUser,
-  User,
 } from "../utils/googleAuth";
-
 import {
-  isDriveAutoSyncEnabled,
-  setDriveAutoSyncEnabled,
-  subscribeToDriveSync,
-  triggerExamAutoSyncToDrive,
-  performImmediateDriveSync,
-  DriveSyncState,
-} from "../utils/googleDriveSync";
+  isGasConfigured,
+  getGasConfig,
+  saveGasConfig,
+  testGasConnection,
+  syncExamToGAS,
+  fetchExamFromGAS,
+  listExamsFromGAS,
+  getGasBackendCode,
+} from "../utils/gasService";
 import { getExamPackages, saveExamPackages } from "../utils/storage";
 
 interface GoogleDriveExamModalProps {
@@ -72,75 +59,71 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
   onSelectExam,
   tokens = [],
 }) => {
-  const [currentUser, setCurrentUser] = useState<User | any | null>(null);
-  const [driveToken, setDriveToken] = useState<string>(() => getCachedAccessToken() || "");
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [gasConfig, setGasConfig] = useState(() => getGasConfig());
+  const [gasUrlInput, setGasUrlInput] = useState(gasConfig.webAppUrl || "");
+  const [isEditingGasUrl, setIsEditingGasUrl] = useState(!gasConfig.webAppUrl);
+  const [isTestingGas, setIsTestingGas] = useState(false);
+  const [isSavingGasUrl, setIsSavingGasUrl] = useState(false);
+  const [showCodeModal, setShowCodeModal] = useState(false);
+  const [gasScriptCode, setGasScriptCode] = useState<string>("");
+  const [copiedScript, setCopiedScript] = useState(false);
+
   const [isLoadingList, setIsLoadingList] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [loadingFileId, setLoadingFileId] = useState<string | null>(null);
-  const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
   const [driveExams, setDriveExams] = useState<GoogleDriveExamItem[]>([]);
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [autoSync, setAutoSync] = useState<boolean>(() => isDriveAutoSyncEnabled());
-  const [driveSyncState, setDriveSyncState] = useState<DriveSyncState>({ status: "idle", lastSyncedAt: null });
 
   // Paste Google Drive Link states
   const [driveLinkInput, setDriveLinkInput] = useState("");
   const [isLoadingFromLink, setIsLoadingFromLink] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
 
-  // Sync listener
+  // Load GAS script code on demand
   useEffect(() => {
-    const unsub = subscribeToDriveSync((state) => {
-      setDriveSyncState(state);
-    });
-    return () => unsub();
-  }, []);
+    if (showCodeModal && !gasScriptCode) {
+      getGasBackendCode().then(setGasScriptCode).catch(() => {});
+    }
+  }, [showCodeModal, gasScriptCode]);
 
-  // Auth state listener
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (user, token) => {
-        setCurrentUser(user);
-        setDriveToken(token);
-      },
-      () => {
-        setCurrentUser(null);
-        setDriveToken("");
-      }
-    );
-    const unsubExpired = onGoogleAuthExpired(() => {
-      setCurrentUser(null);
-      setDriveToken("");
-      setStatusMsg({
-        type: "error",
-        text: "Sesi login Google Drive telah kedaluwarsa. Silakan hubungkan ulang akun Google Anda untuk melanjutkan.",
-      });
-    });
-    return () => {
-      unsubscribe();
-      unsubExpired();
-    };
-  }, []);
-
-  // Fetch Drive Exam List
-  const fetchDriveExams = async (token: string) => {
-    if (!token) return;
+  // Fetch exams list from Google Apps Script or cached OAuth
+  const fetchExamsList = async () => {
     setIsLoadingList(true);
     try {
-      const list = await listExamsFromGoogleDrive(token);
-      setDriveExams(list);
-    } catch (err: any) {
-      console.warn("Drive exams fetch error:", err);
-      if (isAuthExpiredError(err)) {
-        setCurrentUser(null);
-        setDriveToken("");
+      if (isGasConfigured()) {
+        const res = await listExamsFromGAS();
+        if (res && res.success && Array.isArray(res.exams)) {
+          const formatted: GoogleDriveExamItem[] = res.exams.map((ex: any) => ({
+            id: ex.id || ex.code || `gas_${Date.now()}`,
+            name: `${ex.title || "Naskah Soal"} (${ex.code || "-"})`,
+            createdTime: ex.createdAt || ex.updatedAt || new Date().toISOString(),
+            modifiedTime: ex.updatedAt || new Date().toISOString(),
+            size: undefined,
+            webViewLink: ex.sheetUrl || undefined,
+            examCode: ex.code,
+            examTitle: ex.title,
+            questionCount: ex.questionsCount || ex.totalQuestions || 0,
+            subject: ex.subject,
+            classLevel: ex.classLevel,
+          }));
+          setDriveExams(formatted);
+          return;
+        }
       }
+
+      // Fallback: If cached OAuth token exists
+      const token = getCachedAccessToken();
+      if (token) {
+        const list = await listExamsFromGoogleDrive(token);
+        setDriveExams(list);
+      }
+    } catch (err: any) {
+      console.warn("Fetch exams error:", err);
       setStatusMsg({
         type: "error",
-        text: formatGoogleAuthErrorMessage(err) || "Gagal memuat naskah soal dari Google Drive.",
+        text: `Gagal memuat naskah soal: ${err?.message || "Koneksi terputus"}`,
       });
     } finally {
       setIsLoadingList(false);
@@ -148,117 +131,182 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen && driveToken) {
-      fetchDriveExams(driveToken);
+    if (isOpen) {
+      const cfg = getGasConfig();
+      setGasConfig(cfg);
+      setGasUrlInput(cfg.webAppUrl || "");
+      setIsEditingGasUrl(!cfg.webAppUrl);
+      if (cfg.webAppUrl) {
+        fetchExamsList();
+      }
     }
-  }, [isOpen, driveToken]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  // Handle Google Drive Connection
-  const handleConnect = async () => {
-    setIsConnecting(true);
-    setStatusMsg(null);
-    try {
-      const res = await googleSignIn();
-      if (res) {
-        setCurrentUser(res.user);
-        setDriveToken(res.accessToken);
-        setStatusMsg({
-          type: "success",
-          text: `Berhasil terhubung ke Google Drive sebagai ${res.user.displayName || res.user.email || "Pengguna"}!`,
-        });
-        await fetchDriveExams(res.accessToken);
-      }
-    } catch (err: any) {
-      // Fallback GIS if unauthorized domain error
-      const isUnauth =
-        err?.code === "auth/unauthorized-domain" ||
-        err?.message?.includes("unauthorized-domain");
+  // Handle Save & Test Google Apps Script Web App URL
+  const handleSaveGasUrl = async (testAfter = false) => {
+    const cleanUrl = gasUrlInput.trim();
+    if (!cleanUrl) {
+      setStatusMsg({ type: "error", text: "Silakan masukkan Web App URL Google Apps Script Anda." });
+      return;
+    }
 
-      if (isUnauth) {
-        try {
-          const gisRes = await requestGoogleTokenViaGIS();
-          if (gisRes) {
-            setCurrentUser(gisRes.user);
-            setDriveToken(gisRes.accessToken);
-            setStatusMsg({
-              type: "success",
-              text: `Berhasil terhubung via Google Identity Services sebagai ${gisRes.user.displayName || "Pengguna"}!`,
-            });
-            await fetchDriveExams(gisRes.accessToken);
-            return;
-          }
-        } catch (gisErr: any) {
-          setStatusMsg({
-            type: "error",
-            text: gisErr.message || "Gagal otentikasi Google Drive via GIS.",
-          });
-          return;
-        }
-      }
-
+    if (!cleanUrl.startsWith("https://script.google.com/macros/s/")) {
       setStatusMsg({
         type: "error",
-        text: err?.message || "Gagal menghubungkan akun Google. Pastikan jendela pop-up diizinkan.",
+        text: "Format URL tidak valid. Web App URL harus diawali dengan 'https://script.google.com/macros/s/...' dan berakhiran '/exec'.",
+      });
+      return;
+    }
+
+    setIsSavingGasUrl(true);
+    setStatusMsg(null);
+
+    try {
+      saveGasConfig({ webAppUrl: cleanUrl, connected: true });
+      setGasConfig(getGasConfig());
+      setIsEditingGasUrl(false);
+
+      if (testAfter) {
+        setIsTestingGas(true);
+        const testRes = await testGasConnection(cleanUrl);
+        setIsTestingGas(false);
+
+        if (testRes.success) {
+          setStatusMsg({
+            type: "success",
+            text: `✓ Koneksi Google Drive via Apps Script berhasil! Folder 'CBT SlideExam Database' & Spreadsheet aktif.`,
+          });
+          await fetchExamsList();
+        } else {
+          setStatusMsg({
+            type: "error",
+            text: `Uji koneksi gagal: ${testRes.message}. Pastikan deployment disetel 'Execute as: Me' dan 'Who has access: Anyone'.`,
+          });
+        }
+      } else {
+        setStatusMsg({
+          type: "success",
+          text: "URL Google Apps Script berhasil disimpan. Sistem siap menyimpan naskah ke Google Drive guru!",
+        });
+        await fetchExamsList();
+      }
+    } catch (err: any) {
+      setStatusMsg({
+        type: "error",
+        text: `Gagal menyimpan konfigurasi: ${err?.message || "Terjadi kesalahan"}`,
       });
     } finally {
-      setIsConnecting(false);
+      setIsSavingGasUrl(false);
+      setIsTestingGas(false);
     }
   };
 
-  const handleDisconnect = async () => {
+  // Test active GAS connection
+  const handleTestConnection = async () => {
+    if (!gasConfig.webAppUrl) {
+      setStatusMsg({ type: "error", text: "URL Google Apps Script belum disetel." });
+      return;
+    }
+    setIsTestingGas(true);
+    setStatusMsg(null);
     try {
-      await googleSignOut();
-      setCurrentUser(null);
-      setDriveToken("");
-      setDriveExams([]);
-      setStatusMsg({ type: "info", text: "Akun Google Drive berhasil diputuskan." });
+      const res = await testGasConnection();
+      if (res.success) {
+        setStatusMsg({
+          type: "success",
+          text: `✓ Koneksi Google Drive aktif & siap digunakan! Subfolder naskah soal dan spreadsheet terhubung.`,
+        });
+        await fetchExamsList();
+      } else {
+        setStatusMsg({
+          type: "error",
+          text: `Uji koneksi gagal: ${res.message}. Pastikan akses deployment Web App disetel 'Anyone'.`,
+        });
+      }
     } catch (e: any) {
-      console.warn("Signout error", e);
+      setStatusMsg({
+        type: "error",
+        text: `Koneksi gagal: ${e?.message || "Periksa koneksi internet"}`,
+      });
+    } finally {
+      setIsTestingGas(false);
     }
   };
 
   // Save current active exam to Google Drive
   const handleSaveActiveExam = async () => {
-    if (!driveToken) {
-      await handleConnect();
-      return;
-    }
-
     setIsSaving(true);
     setStatusMsg(null);
     try {
-      const res = await saveExamToGoogleDrive(driveToken, activeExam);
-      const updatedExam: ExamPackage = {
-        ...activeExam,
-        gdriveFileId: res.fileId,
-        gdriveWebViewLink: res.webViewLink,
-        gdriveDownloadLink: res.downloadUrl,
-        gdriveSyncedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      onUpdateExam(updatedExam);
-      setStatusMsg({
-        type: "success",
-        text: `Naskah Soal "${activeExam.title}" (${activeExam.questions.length} butir) berhasil disimpan di folder SlideExam_CBT/Naskah_Soal di Google Drive!`,
-      });
-      await fetchDriveExams(driveToken);
-    } catch (err: any) {
-      if (isAuthExpiredError(err)) {
-        setCurrentUser(null);
-        setDriveToken("");
+      if (isGasConfigured()) {
+        const gasRes = await syncExamToGAS(activeExam, tokens);
+        if (gasRes && gasRes.success) {
+          const updatedExam: ExamPackage = {
+            ...activeExam,
+            gdriveSyncedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            ...(gasRes.fileUrl ? { gdriveWebViewLink: gasRes.fileUrl } : {}),
+          };
+          onUpdateExam(updatedExam);
+
+          // Update storage
+          const all = getExamPackages();
+          const idx = all.findIndex((e) => e.id === updatedExam.id);
+          if (idx >= 0) all[idx] = updatedExam;
+          else all.unshift(updatedExam);
+          saveExamPackages(all);
+
+          setStatusMsg({
+            type: "success",
+            text: `✓ Naskah Soal "${activeExam.title}" (${activeExam.questions.length} butir) berhasil disimpan di Google Drive (Folder Data Soal) & Sheets! (100% Bebas OAuth)`,
+          });
+          await fetchExamsList();
+          return;
+        } else {
+          throw new Error(gasRes?.message || "Gagal menyimpan naskah ke Apps Script.");
+        }
       }
+
+      // Check if OAuth token cached
+      const token = getCachedAccessToken();
+      if (token) {
+        const res = await saveExamToGoogleDrive(token, activeExam);
+        const updatedExam: ExamPackage = {
+          ...activeExam,
+          gdriveFileId: res.fileId,
+          gdriveWebViewLink: res.webViewLink,
+          gdriveDownloadLink: res.downloadUrl,
+          gdriveSyncedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        onUpdateExam(updatedExam);
+        setStatusMsg({
+          type: "success",
+          text: `✓ Naskah Soal "${activeExam.title}" tersimpan di Google Drive!`,
+        });
+        await fetchExamsList();
+        return;
+      }
+
+      // If neither is configured, show configuration prompt
+      setIsEditingGasUrl(true);
+      setStatusMsg({
+        type: "info",
+        text: "Silakan masukkan Web App URL Google Apps Script Anda di atas untuk langsung menyimpan naskah ke Google Drive guru (100% Bebas Google Cloud & Bebas Firebase).",
+      });
+    } catch (err: any) {
       setStatusMsg({
         type: "error",
-        text: formatGoogleAuthErrorMessage(err) || "Gagal menyimpan naskah ke Google Drive.",
+        text: formatGoogleAuthErrorMessage(err) || err?.message || "Gagal menyimpan naskah ke Google Drive.",
       });
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Load Exam from Google Drive into current session
+  // Load Exam from Google Drive / GAS into current session
   const handleLoadExam = async (item: GoogleDriveExamItem) => {
     if (!confirm(`Muat naskah soal "${item.name}" dari Google Drive ke editor dan sesi CBT saat ini?`)) {
       return;
@@ -267,54 +315,42 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
     setLoadingFileId(item.id);
     setStatusMsg(null);
     try {
-      const loadedExam = await loadExamFromGoogleDrive(driveToken, item.id);
+      let loadedExam: ExamPackage | null = null;
+
+      // 1. Try loading via GAS if examCode is present
+      if (isGasConfigured() && item.examCode) {
+        const gasData = await fetchExamFromGAS(item.examCode);
+        if (gasData && gasData.success && gasData.exam) {
+          loadedExam = gasData.exam;
+        }
+      }
+
+      // 2. Try loading via file loader if file ID is valid Google Drive file ID
+      if (!loadedExam) {
+        const token = getCachedAccessToken();
+        loadedExam = await loadExamFromGoogleDrive(token || null, item.id);
+      }
+
+      if (!loadedExam) {
+        throw new Error("Tidak dapat mengunduh data naskah soal dari Google Drive.");
+      }
+
       onUpdateExam(loadedExam);
       if (onSelectExam) {
         onSelectExam(loadedExam);
       }
+
       setStatusMsg({
         type: "success",
-        text: `Naskah Soal "${loadedExam.title}" (${loadedExam.questions.length} butir) berhasil dimuat dari Google Drive!`,
+        text: `✓ Naskah Soal "${loadedExam.title}" (${loadedExam.questions.length} butir) berhasil dimuat ke editor!`,
       });
     } catch (err: any) {
-      if (isAuthExpiredError(err)) {
-        setCurrentUser(null);
-        setDriveToken("");
-      }
       setStatusMsg({
         type: "error",
         text: formatGoogleAuthErrorMessage(err) || "Gagal memuat naskah soal dari Google Drive.",
       });
     } finally {
       setLoadingFileId(null);
-    }
-  };
-
-  // Delete Exam from Google Drive
-  const handleDeleteExam = async (item: GoogleDriveExamItem) => {
-    if (!confirm(`Hapus file naskah "${item.name}" secara permanen dari Google Drive?`)) {
-      return;
-    }
-
-    setDeletingFileId(item.id);
-    try {
-      await deleteExamFromGoogleDrive(driveToken, item.id);
-      setStatusMsg({
-        type: "info",
-        text: `File "${item.name}" berhasil dihapus dari Google Drive.`,
-      });
-      setDriveExams((prev) => prev.filter((ex) => ex.id !== item.id));
-    } catch (err: any) {
-      if (isAuthExpiredError(err)) {
-        setCurrentUser(null);
-        setDriveToken("");
-      }
-      setStatusMsg({
-        type: "error",
-        text: formatGoogleAuthErrorMessage(err) || "Gagal menghapus file dari Google Drive.",
-      });
-    } finally {
-      setDeletingFileId(null);
     }
   };
 
@@ -338,8 +374,8 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
         return;
       }
 
-      // Load exam using resilient multi-tier loader
-      const loadedExam = await loadExamFromGoogleDrive(driveToken || null, extracted.fileId);
+      const token = getCachedAccessToken();
+      const loadedExam = await loadExamFromGoogleDrive(token || null, extracted.fileId);
       if (!loadedExam || !Array.isArray(loadedExam.questions) || loadedExam.questions.length === 0) {
         throw new Error("File naskah soal berhasil diunduh namun tidak memuat butir soal yang valid.");
       }
@@ -350,7 +386,6 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
         gdriveSyncedAt: new Date().toISOString(),
       };
 
-      // Persist into local storage packages
       const allExams = getExamPackages();
       const existingIdx = allExams.findIndex(
         (e) =>
@@ -366,35 +401,14 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
       }
       saveExamPackages(allExams);
 
-      // Notify parent & apply
       onUpdateExam(updatedExam);
       if (onSelectExam) {
         onSelectExam(updatedExam);
       }
 
-      // Share to server registry so students can find it immediately
-      try {
-        await fetch("/api/exams/share", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            exam: updatedExam,
-            token: driveToken || null,
-          }),
-        });
-      } catch {}
-
-      // Cache locally
-      try {
-        localStorage.setItem(`gdrive_cache_${extracted.fileId}`, JSON.stringify(updatedExam));
-        if (updatedExam.code) {
-          localStorage.setItem(`gdrive_code_${updatedExam.code.toUpperCase()}`, JSON.stringify(updatedExam));
-        }
-      } catch {}
-
       setStatusMsg({
         type: "success",
-        text: `Berhasil memuat naskah soal "${updatedExam.title}" (${updatedExam.questions.length} butir soal, Kode: ${updatedExam.code || "-"}) dari Google Drive!`,
+        text: `✓ Berhasil memuat naskah soal "${updatedExam.title}" (${updatedExam.questions.length} butir soal, Kode: ${updatedExam.code || "-"}) dari Google Drive!`,
       });
       setDriveLinkInput("");
     } catch (err: any) {
@@ -409,34 +423,11 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
     }
   };
 
-  const handleCopyLink = (item: GoogleDriveExamItem) => {
-    const link = item.webViewLink || `https://drive.google.com/file/d/${item.id}/view`;
-    navigator.clipboard.writeText(link);
-    setCopiedId(item.id);
-    setTimeout(() => setCopiedId(null), 3000);
-  };
-
-  const handleToggleAutoSync = (enabled: boolean) => {
-    setAutoSync(enabled);
-    setDriveAutoSyncEnabled(enabled);
-    if (enabled && driveToken) {
-      triggerExamAutoSyncToDrive(activeExam, 500, (updated) => onUpdateExam(updated));
-      setStatusMsg({
-        type: "success",
-        text: "Otomatisasi sinkronisasi ke Google Drive diaktifkan. Setiap perubahan soal akan otomatis tersimpan.",
-      });
-    } else {
-      setStatusMsg({
-        type: "info",
-        text: "Otomatisasi sinkronisasi ke Google Drive dinonaktifkan.",
-      });
-    }
-  };
-
-  // Sync all local exams to Google Drive in batch
+  // Sync all local exams in batch
   const handleSyncAllExams = async () => {
-    if (!driveToken) {
-      await handleConnect();
+    if (!isGasConfigured()) {
+      setIsEditingGasUrl(true);
+      setStatusMsg({ type: "info", text: "Atur Web App URL Google Apps Script di atas untuk mencadangkan seluruh naskah ke Google Drive." });
       return;
     }
 
@@ -455,15 +446,15 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
       for (let i = 0; i < allExams.length; i++) {
         const ex = allExams[i];
         try {
-          const res = await saveExamToGoogleDrive(driveToken, ex);
-          updatedList[i] = {
-            ...ex,
-            gdriveFileId: res.fileId,
-            gdriveWebViewLink: res.webViewLink,
-            gdriveDownloadLink: res.downloadUrl,
-            gdriveSyncedAt: new Date().toISOString(),
-          };
-          successCount++;
+          const gasRes = await syncExamToGAS(ex, ex.tokens);
+          if (gasRes && gasRes.success) {
+            updatedList[i] = {
+              ...ex,
+              gdriveSyncedAt: new Date().toISOString(),
+              ...(gasRes.fileUrl ? { gdriveWebViewLink: gasRes.fileUrl } : {}),
+            };
+            successCount++;
+          }
         } catch (itemErr) {
           console.warn("Could not sync exam to Drive:", ex.title, itemErr);
         }
@@ -475,10 +466,10 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
         onUpdateExam(updatedList[activeIdx]);
       }
 
-      await fetchDriveExams(driveToken);
+      await fetchExamsList();
       setStatusMsg({
         type: "success",
-        text: `Berhasil menyinkronkan ${successCount} dari ${allExams.length} naskah soal ke Google Drive!`,
+        text: `✓ Berhasil menyimpan ${successCount} dari ${allExams.length} naskah soal ke Google Drive (Folder Data Soal)!`,
       });
     } catch (err: any) {
       setStatusMsg({
@@ -490,9 +481,18 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
     }
   };
 
+  const handleCopyLink = (item: GoogleDriveExamItem) => {
+    const link = item.webViewLink || `https://drive.google.com/file/d/${item.id}/view`;
+    navigator.clipboard.writeText(link);
+    setCopiedId(item.id);
+    setTimeout(() => setCopiedId(null), 3000);
+  };
+
+  const isConnected = isGasConfigured();
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-[#121214] border border-slate-800 rounded-3xl max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="bg-[#121214] border border-slate-800 rounded-3xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
         <div className="p-6 border-b border-slate-800/80 flex items-center justify-between bg-[#16161a]">
           <div className="flex items-center gap-3">
@@ -501,14 +501,14 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <span>Penyimpanan Google Drive CBT</span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
+                <span>Penyimpanan Google Drive & Cloud Database</span>
+                <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  Otomatisasi Cloud
+                  Bebas Google Cloud / OAuth
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
-                Simpan, muat, dan sinkronkan naskah soal secara otomatis ke Google Drive guru
+                Simpan, cadangkan, dan muat naskah soal langsung ke Google Drive & Sheets guru tanpa registrasi GCP.
               </p>
             </div>
           </div>
@@ -540,24 +540,166 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
             </div>
           )}
 
-          {/* Card: Tempel Link Naskah Soal dari Google Drive */}
-          <div className="p-5 bg-gradient-to-br from-[#1b1a29] via-[#161622] to-[#121218] border border-indigo-500/40 rounded-2xl shadow-lg space-y-3">
+          {/* Card 1: Google Apps Script Web App Connection (Zero OAuth / No GCP) */}
+          <div className="p-5 bg-[#18181c] border border-indigo-500/30 rounded-2xl space-y-3.5 shadow-md">
             <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
-                  <Link2 className="w-4 h-4 text-indigo-400" />
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                  isConnected ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-indigo-500/10 border-indigo-500/30 text-indigo-400"
+                }`}>
+                  <Database className="w-5 h-5" />
                 </div>
                 <div>
                   <div className="font-bold text-white text-sm flex items-center gap-2">
-                    <span>Tempel Link Naskah Soal dari Google Drive</span>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
-                      Akses Cepat
+                    <span>Integrasi Google Drive & Apps Script Guru</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                      isConnected ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" : "bg-amber-500/20 text-amber-300 border-amber-500/30"
+                    }`}>
+                      {isConnected ? "TERHUBUNG" : "BELUM DIHUBUNGKAN"}
                     </span>
                   </div>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Jika kode soal belum terindeks otomatis, tempelkan link berbagi (share link) file naskah .json dari Google Drive di sini.
+                    100% Bebas Google Cloud & Firebase. Script berjalan langsung di akun Google Drive guru dengan akses folder otomatis.
                   </p>
                 </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowCodeModal(true)}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+              >
+                <FileCode className="w-3.5 h-3.5" />
+                <span>Kode Script (Code.gs)</span>
+              </button>
+            </div>
+
+            {/* Input or Connected Status */}
+            {isEditingGasUrl ? (
+              <div className="space-y-2 pt-1">
+                <label className="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Web App URL Google Apps Script:</span>
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="url"
+                    value={gasUrlInput}
+                    onChange={(e) => setGasUrlInput(e.target.value)}
+                    placeholder="https://script.google.com/macros/s/.../exec"
+                    className="flex-1 px-3.5 py-2.5 bg-black/50 border border-slate-700 focus:border-indigo-500 rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 font-mono transition-all"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleSaveGasUrl(true)}
+                      disabled={isSavingGasUrl || isTestingGas || !gasUrlInput.trim()}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-950 shrink-0"
+                    >
+                      {isTestingGas ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>{isTestingGas ? "Menguji..." : "Simpan & Hubungkan"}</span>
+                    </button>
+                    {gasConfig.webAppUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGasUrlInput(gasConfig.webAppUrl);
+                          setIsEditingGasUrl(false);
+                        }}
+                        className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 bg-black/40 border border-slate-800 rounded-xl text-xs">
+                <div className="space-y-0.5 truncate">
+                  <div className="text-slate-400 text-[11px]">URL Web App Aktif:</div>
+                  <div className="font-mono text-emerald-400 truncate max-w-lg">{gasConfig.webAppUrl}</div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleTestConnection}
+                    disabled={isTestingGas}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-slate-700 rounded-lg font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isTestingGas ? "animate-spin text-indigo-400" : ""}`} />
+                    <span>{isTestingGas ? "Menguji..." : "Uji Koneksi"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingGasUrl(true)}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg font-semibold cursor-pointer"
+                  >
+                    Ganti URL
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Card 2: Active Exam Quick Save Section */}
+          <div className="p-5 bg-gradient-to-r from-indigo-950/30 via-purple-950/20 to-slate-900/40 border border-indigo-500/30 rounded-2xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
+                  Naskah Soal yang Sedang Aktif
+                </span>
+                <h3 className="text-base font-bold text-white mt-1">{activeExam.title}</h3>
+                <p className="text-xs text-slate-400">
+                  {activeExam.teacherProfile.subject} • Kode: <strong className="font-mono text-emerald-400">{activeExam.code}</strong> • {activeExam.questions.length} Butir Soal ({activeExam.totalScore} Poin)
+                </p>
+              </div>
+
+              <button
+                onClick={handleSaveActiveExam}
+                disabled={isSaving}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-950 cursor-pointer shrink-0"
+              >
+                <CloudUpload className={`w-4 h-4 ${isSaving ? "animate-bounce" : ""}`} />
+                <span>{isSaving ? "Menyimpan ke Drive..." : activeExam.gdriveSyncedAt ? "Perbarui di Google Drive" : "Simpan ke Google Drive"}</span>
+              </button>
+            </div>
+
+            {activeExam.gdriveSyncedAt && (
+              <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/20 px-3 py-1.5 rounded-xl">
+                <Check className="w-3.5 h-3.5" />
+                <span>Tersimpan di Google Drive • Terakhir disinkronkan: {new Date(activeExam.gdriveSyncedAt).toLocaleString("id-ID")}</span>
+                {activeExam.gdriveWebViewLink && (
+                  <a
+                    href={activeExam.gdriveWebViewLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ml-auto inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-semibold underline text-[11px]"
+                  >
+                    <span>Buka Drive/Spreadsheet</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Card 3: Tempel Link Naskah Soal dari Google Drive (Akses Cepat Publik) */}
+          <div className="p-5 bg-[#18181c] border border-slate-800 rounded-2xl space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                <Link2 className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div>
+                <div className="font-bold text-white text-sm flex items-center gap-2">
+                  <span>Tempel Link Naskah Soal dari Google Drive</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 font-bold border border-indigo-500/30">
+                    Akses Langsung
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Tempelkan link berbagi (share link) file naskah .json dari Google Drive di sini untuk memuat soal seketika.
+                </p>
               </div>
             </div>
 
@@ -618,184 +760,36 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                 <span>{linkError}</span>
               </div>
             )}
-
-            <div className="flex flex-col gap-1.5 text-[11px] text-slate-400 pt-0.5 border-t border-slate-800/60 mt-1">
-              <div>
-                💡 <strong>Petunjuk Izin:</strong> Buka file naskah di Google Drive &rarr; klik <strong>Bagikan</strong> &rarr; pastikan setelan akses <strong>"Siapa saja yang memiliki link"</strong> &rarr; Salin Link lalu tempel di sini.
-              </div>
-              <div className="p-2.5 rounded-xl bg-amber-950/30 border border-amber-500/30 text-amber-200/90 text-[11px] space-y-1">
-                <span className="font-bold flex items-center gap-1.5 text-amber-300">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  Perhatian Khusus Akun @belajar.id:
-                </span>
-                <p className="leading-relaxed">
-                  Akun Google Workspace Kemdikbud (<strong>@belajar.id</strong>) membatasi akses file hanya untuk anggota domain organisasi sekolah. Pengguna di luar domain (atau siswa tanpa login belajar.id) akan terblokir (<em>403 Forbidden / Soal Tidak Ditemukan</em>).
-                </p>
-                <p className="text-slate-300 font-medium">
-                  <strong>Rekomendasi:</strong> Gunakan akun Gmail pribadi (<strong>@gmail.com</strong>) untuk menyimpan naskah ujian publik, atau bagikan naskah via <strong>"Paket Anti-Gagal"</strong> di menu Bagikan Ujian (100% mandiri tanpa Google Drive).
-                </p>
-              </div>
-            </div>
           </div>
 
-          {/* Account Connection Card */}
-          <div className="p-4 bg-[#18181c] border border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-slate-300">
-                {currentUser?.photoURL ? (
-                  <img
-                    src={currentUser.photoURL}
-                    alt={currentUser.displayName || "Google User"}
-                    className="w-10 h-10 rounded-xl object-cover"
-                    referrerPolicy="no-referrer"
-                  />
-                ) : (
-                  <UserIcon className="w-5 h-5 text-slate-400" />
-                )}
-              </div>
-              <div>
-                <div className="font-bold text-white text-sm">
-                  {currentUser ? currentUser.displayName || currentUser.email || "Akun Google Terhubung" : "Google Drive Belum Terhubung"}
-                </div>
-                <div className="text-xs text-slate-400">
-                  {currentUser
-                    ? currentUser.email || "Siap menyimpan & memuat naskah soal"
-                    : "Hubungkan akun Google/belajar.id untuk sinkronisasi otomatis"}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {currentUser ? (
-                <>
-                  <button
-                    onClick={() => fetchDriveExams(driveToken)}
-                    disabled={isLoadingList}
-                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="Segarkan daftar soal dari Google Drive"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin text-indigo-400" : ""}`} />
-                    <span>Segarkan</span>
-                  </button>
-                  <button
-                    onClick={handleDisconnect}
-                    className="px-3 py-2 bg-slate-800 hover:bg-rose-950/40 text-rose-400 border border-slate-700 hover:border-rose-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Keluar</span>
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={handleConnect}
-                  disabled={isConnecting}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-md shadow-indigo-950 cursor-pointer"
-                >
-                  <Cloud className="w-4 h-4" />
-                  <span>{isConnecting ? "Menghubungkan..." : "Hubungkan Google Drive"}</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Auto-Sync Setting Card */}
-          <div className="p-4 bg-[#18181c] border border-slate-800 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-400" />
-                <span className="font-bold text-white text-xs">Otomatisasi Sinkronisasi Google Drive</span>
-                <span
-                  className={`text-[9px] px-2 py-0.5 rounded-full font-bold ${
-                    autoSync && currentUser
-                      ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                      : "bg-slate-800 text-slate-400 border border-slate-700"
-                  }`}
-                >
-                  {autoSync && currentUser ? "AKTIF" : "NONAKTIF"}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Setiap kali Anda membuat, mengedit soal, atau menerima sesi siswa, data akan otomatis dicadangkan ke Google Drive.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3 shrink-0">
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoSync}
-                  onChange={(e) => handleToggleAutoSync(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-              </label>
-
-              {currentUser && (
-                <button
-                  onClick={handleSyncAllExams}
-                  disabled={isSyncingAll}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Sinkronkan semua naskah lokal ke Google Drive"
-                >
-                  <CloudUpload className={`w-3.5 h-3.5 ${isSyncingAll ? "animate-spin" : ""}`} />
-                  <span>{isSyncingAll ? "Menyinkronkan..." : "Sinkron Semua"}</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Active Exam Quick Save Section */}
-          <div className="p-5 bg-gradient-to-r from-indigo-950/30 via-purple-950/20 to-slate-900/40 border border-indigo-500/30 rounded-2xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-extrabold uppercase tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-0.5 rounded-full border border-indigo-500/20">
-                  Naskah Soal yang Sedang Aktif
-                </span>
-                <h3 className="text-base font-bold text-white mt-1">{activeExam.title}</h3>
-                <p className="text-xs text-slate-400">
-                  {activeExam.teacherProfile.subject} • Kode: <strong className="font-mono text-emerald-400">{activeExam.code}</strong> • {activeExam.questions.length} Butir Soal ({activeExam.totalScore} Poin)
-                </p>
-              </div>
-
-              <button
-                onClick={handleSaveActiveExam}
-                disabled={isSaving}
-                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-950 cursor-pointer shrink-0"
-              >
-                <CloudUpload className={`w-4 h-4 ${isSaving ? "animate-bounce" : ""}`} />
-                <span>{isSaving ? "Menyimpan ke Drive..." : activeExam.gdriveFileId ? "Perbarui di Drive" : "Simpan ke Google Drive"}</span>
-              </button>
-            </div>
-
-            {activeExam.gdriveSyncedAt && (
-              <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/30 border border-emerald-500/20 px-3 py-1.5 rounded-xl">
-                <Check className="w-3.5 h-3.5" />
-                <span>Tersimpan di Google Drive • Terakhir disinkronkan: {new Date(activeExam.gdriveSyncedAt).toLocaleString("id-ID")}</span>
-                {activeExam.gdriveWebViewLink && (
-                  <a
-                    href={activeExam.gdriveWebViewLink}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="ml-auto inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-semibold underline text-[11px]"
-                  >
-                    <span>Buka File</span>
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Stored Google Drive Exams List */}
+          {/* Card 4: Stored Google Drive Exams List */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <FolderOpen className="w-4 h-4 text-amber-400" />
                 <span>Daftar Naskah Soal di Google Drive ({driveExams.length})</span>
               </h3>
-              <span className="text-[11px] text-slate-400">
-                Folder: <code className="text-indigo-300 bg-slate-800 px-1.5 py-0.5 rounded font-mono">SlideExam_CBT/Naskah_Soal</code>
-              </span>
+              <div className="flex items-center gap-2">
+                {isConnected && (
+                  <button
+                    onClick={handleSyncAllExams}
+                    disabled={isSyncingAll}
+                    className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="Simpan seluruh naskah lokal ke Google Drive"
+                  >
+                    <CloudUpload className={`w-3.5 h-3.5 ${isSyncingAll ? "animate-spin" : ""}`} />
+                    <span>{isSyncingAll ? "Menyinkronkan..." : "Sinkron Semua"}</span>
+                  </button>
+                )}
+                <button
+                  onClick={fetchExamsList}
+                  disabled={isLoadingList}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition-colors cursor-pointer"
+                  title="Segarkan daftar"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin text-indigo-400" : ""}`} />
+                </button>
+              </div>
             </div>
 
             {isLoadingList ? (
@@ -803,28 +797,28 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                 <RefreshCw className="w-6 h-6 text-indigo-400 animate-spin mx-auto" />
                 <p className="text-xs text-slate-400">Memuat daftar naskah soal dari Google Drive...</p>
               </div>
-            ) : !currentUser ? (
+            ) : !isConnected ? (
               <div className="p-8 text-center bg-[#16161a] rounded-2xl border border-slate-800 space-y-3">
                 <Cloud className="w-8 h-8 text-slate-600 mx-auto" />
                 <p className="text-xs text-slate-400 max-w-md mx-auto">
-                  Hubungkan akun Google Drive Anda di atas untuk melihat naskah soal yang tersimpan di cloud.
+                  Hubungkan URL Google Apps Script Anda di atas untuk melihat naskah soal yang tersimpan di Google Drive guru.
                 </p>
                 <button
-                  onClick={handleConnect}
+                  onClick={() => setIsEditingGasUrl(true)}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 cursor-pointer shadow-md"
                 >
                   <Cloud className="w-4 h-4" />
-                  <span>Hubungkan Sekarang</span>
+                  <span>Atur Web App URL</span>
                 </button>
               </div>
             ) : driveExams.length === 0 ? (
               <div className="p-8 text-center bg-[#16161a] rounded-2xl border border-slate-800 space-y-2">
                 <FolderOpen className="w-8 h-8 text-slate-600 mx-auto" />
                 <p className="text-xs text-slate-400">
-                  Belum ada naskah soal yang tersimpan di folder Google Drive Anda.
+                  Belum ada naskah soal yang terdaftar di Google Drive / Spreadsheet Anda.
                 </p>
                 <p className="text-[11px] text-indigo-400">
-                  Klik tombol <strong>"Simpan ke Google Drive"</strong> di atas untuk mengunggah naskah aktif pertama Anda.
+                  Klik tombol <strong>"Simpan ke Google Drive"</strong> di atas untuk menyimpan naskah aktif pertama Anda.
                 </p>
               </div>
             ) : (
@@ -859,8 +853,9 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                         </div>
 
                         <div className="flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
-                          <span>Diperbarui: {new Date(item.modifiedTime).toLocaleString("id-ID")}</span>
-                          {item.size && <span>• {(Number(item.size) / 1024).toFixed(1)} KB</span>}
+                          {item.subject && <span>Mata Pelajaran: {item.subject}</span>}
+                          {item.questionCount !== undefined && <span>• {item.questionCount} Soal</span>}
+                          <span>• Diperbarui: {new Date(item.modifiedTime).toLocaleString("id-ID")}</span>
                         </div>
                       </div>
 
@@ -880,33 +875,23 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                         <button
                           onClick={() => handleCopyLink(item)}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition-all cursor-pointer"
-                          title="Salin Tautan Google Drive"
+                          title="Salin Tautan"
                         >
                           {copiedId === item.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         </button>
 
-                        {/* View in Drive */}
+                        {/* View in Drive/Sheet */}
                         {item.webViewLink && (
                           <a
                             href={item.webViewLink}
                             target="_blank"
                             rel="noreferrer"
                             className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl transition-all cursor-pointer inline-flex"
-                            title="Buka File di Google Drive"
+                            title="Buka di Google Drive / Spreadsheet"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                           </a>
                         )}
-
-                        {/* Delete */}
-                        <button
-                          onClick={() => handleDeleteExam(item)}
-                          disabled={deletingFileId === item.id}
-                          className="p-1.5 bg-slate-800 hover:bg-rose-950/40 text-slate-400 hover:text-rose-400 rounded-xl transition-all cursor-pointer"
-                          title="Hapus dari Google Drive"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
                       </div>
                     </div>
                   );
@@ -919,8 +904,8 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
         {/* Footer */}
         <div className="p-5 border-t border-slate-800 bg-[#16161a] flex items-center justify-between text-xs text-slate-400">
           <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-indigo-400" />
-            <span>Naskah soal otomatis diatur dengan izin publik untuk akses cepat perangkat siswa saat ujian.</span>
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span>Naskah soal tersimpan aman di Google Drive pribadi Anda, siap diakses kapan pun tanpa batas.</span>
           </div>
           <button
             onClick={onClose}
@@ -930,6 +915,65 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Code Modal */}
+      {showCodeModal && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-[#141418] border border-slate-700 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-[#18181e]">
+              <div className="flex items-center gap-2">
+                <FileCode className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-bold text-white">Kode Script Backend (Code.gs)</h3>
+              </div>
+              <button
+                onClick={() => setShowCodeModal(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto space-y-3 text-xs text-slate-300 flex-1">
+              <div className="p-3 bg-indigo-950/30 border border-indigo-500/30 rounded-xl space-y-1">
+                <div className="font-bold text-white">Langkah Pasang Cepat (2 Menit):</div>
+                <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px]">
+                  <li>Buka <a href="https://script.google.com" target="_blank" rel="noreferrer" className="text-indigo-400 underline">script.google.com</a> lalu buat Proyek Baru.</li>
+                  <li>Tempel kode script di bawah ini ke file <code className="text-emerald-300">Code.gs</code>.</li>
+                  <li>Klik <strong>Terapkan (Deploy)</strong> &rarr; <strong>Kelola Deployment</strong> &rarr; <strong>Deployment Baru</strong>.</li>
+                  <li>Pilih jenis: <strong>Aplikasi Web</strong> (Web App).</li>
+                  <li>Setel <em>Execute as:</em> <strong>Me (Saya)</strong> dan <em>Who has access:</em> <strong>Anyone (Siapa saja)</strong>.</li>
+                  <li>Salin Web App URL yang dihasilkan dan tempelkan di kotak URL di atas!</li>
+                </ol>
+              </div>
+
+              <div className="relative">
+                <pre className="p-3 bg-black/60 border border-slate-800 rounded-xl text-[11px] font-mono text-slate-300 overflow-x-auto max-h-64 select-all">
+                  {gasScriptCode || "// Memuat script..."}
+                </pre>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(gasScriptCode);
+                    setCopiedScript(true);
+                    setTimeout(() => setCopiedScript(false), 2500);
+                  }}
+                  className="absolute top-2.5 right-2.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
+                >
+                  {copiedScript ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedScript ? "Tersalin!" : "Salin Kode"}</span>
+                </button>
+              </div>
+            </div>
+            <div className="p-3 border-t border-slate-800 bg-[#18181e] flex justify-end">
+              <button
+                onClick={() => setShowCodeModal(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

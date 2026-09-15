@@ -31,11 +31,10 @@ import {
 } from "../utils/examShareEncoder";
 import { getStudentTokens, saveExamPackages, getExamPackages } from "../utils/storage";
 import { deduplicateStudentTokens } from "../utils/tokenValidator";
-import { syncExamToGAS } from "../utils/gasService";
+import { syncExamToGAS, isGasConfigured } from "../utils/gasService";
 import { saveExamToGoogleDrive, formatExamDriveFileName, formatGoogleDriveDirectDownloadUrl } from "../utils/googleDrive";
 import {
   getCachedAccessToken,
-  googleSignIn,
   isAuthExpiredError,
   formatGoogleAuthErrorMessage,
   clearAuthSession,
@@ -251,67 +250,77 @@ export const DirectStudentShareModal: React.FC<DirectStudentShareModalProps> = (
     setDriveUploadError(null);
     setDriveUploadSuccess(null);
     try {
-      let tokenToUse = getCachedAccessToken();
-      if (!tokenToUse) {
-        const signinRes = await googleSignIn();
-        if (signinRes?.accessToken) {
-          tokenToUse = signinRes.accessToken;
-        }
-      }
-      if (!tokenToUse) {
-        throw new Error("Izin otentikasi Google Drive diperlukan untuk mengunggah naskah soal.");
-      }
+      // 1. Prioritaskan Google Apps Script (100% Bebas Google Cloud & Bebas Firebase)
+      if (isGasConfigured()) {
+        const gasRes = await syncExamToGAS(currentExam, currentToken ? [currentToken] : currentExam.tokens);
+        if (gasRes && gasRes.success) {
+          const updatedExam: ExamPackage = {
+            ...currentExam,
+            gdriveSyncedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            ...(gasRes.fileUrl ? { gdriveWebViewLink: gasRes.fileUrl } : {}),
+          };
 
-      let res;
-      try {
-        res = await saveExamToGoogleDrive(tokenToUse, currentExam);
-      } catch (uploadErr: any) {
-        if (isAuthExpiredError(uploadErr)) {
-          clearAuthSession();
-          const reauthRes = await googleSignIn();
-          if (reauthRes?.accessToken) {
-            tokenToUse = reauthRes.accessToken;
-            res = await saveExamToGoogleDrive(tokenToUse, currentExam);
+          const all = getExamPackages();
+          const idx = all.findIndex((e) => e.id === updatedExam.id);
+          let updatedAll: ExamPackage[];
+          if (idx >= 0) {
+            updatedAll = [...all];
+            updatedAll[idx] = updatedExam;
           } else {
-            throw uploadErr;
+            updatedAll = [updatedExam, ...all];
           }
-        } else {
-          throw uploadErr;
+          saveExamPackages(updatedAll);
+
+          if (onSelectExam) {
+            onSelectExam(updatedExam);
+          }
+
+          setDriveUploadSuccess(`✓ Naskah berhasil disimpan di Google Drive (Folder Data Soal) & Sheets via Apps Script!`);
+          setTimeout(() => setDriveUploadSuccess(null), 5000);
+          return;
         }
       }
 
-      const updatedExam: ExamPackage = {
-        ...currentExam,
-        gdriveFileId: res.fileId,
-        gdriveFileName: res.fileName,
-        gdriveWebViewLink: res.webViewLink,
-        gdriveDownloadLink: res.downloadUrl,
-        gdriveSyncedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      // 2. Jika ada token Drive aktif yang tersimpan
+      let tokenToUse = getCachedAccessToken();
+      if (tokenToUse) {
+        const res = await saveExamToGoogleDrive(tokenToUse, currentExam);
+        const updatedExam: ExamPackage = {
+          ...currentExam,
+          gdriveFileId: res.fileId,
+          gdriveFileName: res.fileName,
+          gdriveWebViewLink: res.webViewLink,
+          gdriveDownloadLink: res.downloadUrl,
+          gdriveSyncedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
 
-      // Persist in local storage
-      const all = getExamPackages();
-      const idx = all.findIndex((e) => e.id === updatedExam.id);
-      let updatedAll: ExamPackage[];
-      if (idx >= 0) {
-        updatedAll = [...all];
-        updatedAll[idx] = updatedExam;
-      } else {
-        updatedAll = [updatedExam, ...all];
+        const all = getExamPackages();
+        const idx = all.findIndex((e) => e.id === updatedExam.id);
+        let updatedAll: ExamPackage[];
+        if (idx >= 0) {
+          updatedAll = [...all];
+          updatedAll[idx] = updatedExam;
+        } else {
+          updatedAll = [updatedExam, ...all];
+        }
+        saveExamPackages(updatedAll);
+
+        if (onSelectExam) {
+          onSelectExam(updatedExam);
+        }
+
+        setDriveUploadSuccess(`✓ Naskah berhasil disimpan di Google Drive (Backup_Data_Aplikasi) dengan nama: ${res.fileName}`);
+        setTimeout(() => setDriveUploadSuccess(null), 5000);
+        return;
       }
-      saveExamPackages(updatedAll);
 
-      // Notify parent
-      if (onSelectExam) {
-        onSelectExam(updatedExam);
-      }
-
-      setDriveUploadSuccess(`✓ Naskah berhasil disimpan di Google Drive (Backup_Data_Aplikasi) dengan nama: ${res.fileName}`);
-      setTimeout(() => setDriveUploadSuccess(null), 5000);
+      // 3. Jika belum dikonfigurasi
+      setDriveUploadError("URL Google Apps Script belum disetel. Atur Web App URL di menu 'Integrasi Google Apps Script & Sheets' (100% Bebas Google Cloud/OAuth), atau gunakan tautan 'Paket Anti-Gagal (Link Langsung)' di tab sebelah yang siap diakses siswa tanpa perlu Google Drive.");
     } catch (err: any) {
       console.warn("Upload to Drive error:", err);
-      setDriveUploadError(formatGoogleAuthErrorMessage(err) || "Gagal mengunggah naskah soal ke Google Drive.");
+      setDriveUploadError(formatGoogleAuthErrorMessage(err) || "Gagal menyimpan naskah soal ke Google Drive.");
     } finally {
       setIsUploadingToDrive(false);
     }

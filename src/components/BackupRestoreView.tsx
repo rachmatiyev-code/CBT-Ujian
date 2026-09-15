@@ -1106,282 +1106,49 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
         </div>
       )}
 
-      {/* Firebase & Google Cloud Unauthorized Domain / Origin Mismatch Assistance Card */}
-      {unauthDomainInfo && (
-        <div className="bg-amber-950/20 border border-amber-500/30 rounded-2xl p-5 text-amber-200 text-xs space-y-3.5 animate-in fade-in">
-          <div className="flex items-start gap-3">
-            <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <h4 className="font-bold text-amber-300 text-sm">
-                Panduan Mengatasi Error (Error 400: origin_mismatch / unauthorized-domain)
-              </h4>
-              <p className="text-amber-200/80 leading-relaxed">
-                Google OAuth 2.0 mengharuskan setiap domain asal (<span className="font-mono text-amber-300">origin</span>) tempat aplikasi berjalan didaftarkan di <strong>Google Cloud Console</strong> demi keamanan data.
-              </p>
-            </div>
-          </div>
-
-          <div className="bg-[#121214] border border-amber-500/20 rounded-xl p-3.5 space-y-3">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-slate-400 text-[11px]">Asal URL Aplikasi Saat Ini:</span>
-              <div className="flex items-center gap-2">
-                <code className="px-2.5 py-1 bg-amber-500/10 text-amber-300 font-mono font-bold rounded-lg border border-amber-500/30 text-xs">
-                  {typeof window !== "undefined" ? window.location.origin : `https://${unauthDomainInfo.hostname}`}
-                </code>
-                <button
-                  type="button"
-                  onClick={handleCopyHostname}
-                  className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer"
-                >
-                  {copiedHostname ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedHostname ? "Tersalin!" : "Salin URL Asal"}</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-[11px] text-slate-300 pt-2 border-t border-slate-800">
-              <div className="font-bold text-amber-300">Langkah Mendaftarkan di Google Cloud Console:</div>
-              <ol className="list-decimal list-inside space-y-1.5 pl-1 leading-relaxed">
-                <li>
-                  Buka <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-indigo-400 underline hover:text-indigo-300">Google Cloud Console &gt; APIs &amp; Services &gt; Credentials</a>.
-                </li>
-                <li>
-                  Cari dan klik pada <strong>OAuth 2.0 Client ID</strong> aplikasi Anda.
-                </li>
-                <li>
-                  Pada bagian <strong>Authorized JavaScript origins</strong> (Asal JavaScript yang Diberi Otorisasi), klik <strong>+ ADD URI</strong>.
-                </li>
-                <li>
-                  Tambahkan: <code className="text-amber-300 font-mono font-bold">{typeof window !== "undefined" ? window.location.origin : `https://${unauthDomainInfo.hostname}`}</code>
-                </li>
-                <li>
-                  Klik <strong>SAVE</strong>. (Perubahan biasanya aktif dalam 1-5 menit).
-                </li>
-              </ol>
-            </div>
-          </div>
-
-          <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl text-emerald-200 text-xs space-y-1.5">
-            <div className="flex items-center gap-2 font-bold text-emerald-300">
-              <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Solusi Instan Tanpa Setting Google Cloud (Paling Praktis):</span>
-            </div>
-            <p className="text-emerald-100/80 leading-relaxed text-[11px]">
-              Gunakan fitur <strong>"Integrasi Google Apps Script &amp; Google Sheets"</strong> di panel bagian atas. Fitur tersebut tidak terikat batasan domain origin OAuth, gratis, dan otomatis menyimpan seluruh naskah soal serta nilai siswa ke Google Drive &amp; Sheets Anda.
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Google Drive Dedicated Folder Indicator */}
-      <div className="bg-[#121214] border border-slate-800 rounded-3xl p-6 sm:p-8 text-white shadow-lg space-y-5">
+      {/* Informasi Arsitektur Bebas Google Cloud & Bebas Firebase */}
+      <div className="bg-[#121214] border border-slate-800 rounded-3xl p-6 sm:p-7 text-white shadow-lg space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
               <Folder className="w-6 h-6" />
             </div>
             <div>
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Folder Utama Sinkronisasi Google Drive
+              <div className="text-xs font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>100% Bebas Google Cloud &amp; Bebas Firebase</span>
               </div>
-              <h3 className="text-xl sm:text-2xl font-bold font-mono tracking-wide text-white">
-                {GOOGLE_DRIVE_BACKUP_FOLDER_NAME}
+              <h3 className="text-xl font-bold tracking-wide text-white">
+                Folder Database Google Drive &amp; Spreadsheet
               </h3>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {currentUser && driveToken ? (
-              <div className="flex items-center gap-2.5">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl">
-                  {currentUser.photoURL ? (
-                    <img src={currentUser.photoURL} alt="Avatar" className="w-5 h-5 rounded-full" referrerPolicy="no-referrer" />
-                  ) : (
-                    <UserIcon className="w-4 h-4 text-slate-400" />
-                  )}
-                  <span className="text-xs text-slate-200 font-medium truncate max-w-[140px]">
-                    {currentUser.displayName || currentUser.email}
-                  </span>
-                </div>
-                <span className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-medium flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Google Drive Terhubung</span>
-                </span>
-                <button
-                  onClick={handleDisconnectDrive}
-                  className="p-2 text-slate-400 hover:text-rose-400 bg-slate-900 hover:bg-slate-800 rounded-xl border border-slate-800 text-xs font-semibold cursor-pointer transition-colors"
-                  title="Putuskan Hubungan Akun Google"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={handleConnectGoogleDrive}
-                disabled={isConnectingDrive}
-                className="flex items-center gap-2.5 px-4 py-2.5 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer border border-slate-200 disabled:opacity-50"
-              >
-                <svg className="w-4 h-4" viewBox="0 0 48 48">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
-                </svg>
-                <span>{isConnectingDrive ? "Menghubungkan Akun..." : "Sign in with Google"}</span>
-              </button>
-            )}
+            <span className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-medium flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>DriveApp &amp; Sheets Siap Pakai</span>
+            </span>
           </div>
         </div>
 
-        <p className="text-xs text-slate-300 leading-relaxed max-w-2xl">
-          Aplikasi hanya menyimpan data cadangan ke folder khusus bernama <strong className="text-indigo-300 font-mono">{GOOGLE_DRIVE_BACKUP_FOLDER_NAME}</strong> di Google Drive Anda. Aplikasi tidak akan membuat folder lain untuk menjaga kerapian penyimpanan Drive Anda.
+        <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
+          Aplikasi ini tidak memerlukan setup Google Cloud Console (OAuth 2.0) atau Firebase. Semua sinkronisasi naskah soal, nilai siswa, dan pencadangan Google Drive dikelola langsung oleh <strong>Google Apps Script (Web App)</strong> di akun Google Anda sendiri secara aman tanpa risiko <em>Error 400: origin_mismatch</em>.
         </p>
 
-        {/* Google OAuth Client ID Configuration Toggle & Panel */}
-        <div className="pt-2 border-t border-slate-800">
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={() => setShowClientIdConfig(!showClientIdConfig)}
-              className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-            >
-              <Key className="w-3.5 h-3.5" />
-              <span>{showClientIdConfig ? "Sembunyikan Pengaturan Client ID Google" : "Pengaturan Client ID Google (OAuth)"}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 font-mono">
-                {googleClientIdInput ? "Tersedia" : "Belum Disetel"}
-              </span>
-            </button>
-
-            {googleClientIdInput && (
-              <span className="text-[11px] text-slate-400 font-mono truncate max-w-xs hidden sm:inline">
-                ID: {googleClientIdInput.slice(0, 20)}...
-              </span>
-            )}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl">
+            <div className="text-xs font-bold text-slate-200">1. Data Soal</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Naskah JSON &amp; Sheet Paket_Ujian tersimpan otomatis di Google Drive guru.</div>
           </div>
-
-          {showClientIdConfig && (
-            <div className="mt-3 p-4 bg-[#161618] border border-slate-800 rounded-2xl space-y-3 animate-in fade-in">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-xs font-bold text-slate-200">Google Cloud OAuth 2.0 Client ID</div>
-                  <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
-                    Client ID digunakan oleh Google Identity Services (GIS) untuk otorisasi akses Google Drive.
-                    Aplikasi telah dilengkapi Client ID bawaan, atau Anda dapat menggunakan Client ID dari Google Cloud Console Anda sendiri.
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <input
-                  type="text"
-                  value={googleClientIdInput}
-                  onChange={(e) => setGoogleClientIdInput(e.target.value)}
-                  placeholder="Contoh: 123456789-abc.apps.googleusercontent.com"
-                  className="w-full px-3 py-2 bg-[#101012] border border-slate-700 rounded-xl text-xs text-slate-200 font-mono focus:border-indigo-500 focus:outline-none transition-colors"
-                />
-
-                <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleSaveGoogleClientId}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                    >
-                      Simpan Client ID
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleResetGoogleClientId}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                    >
-                      Reset ke Bawaan
-                    </button>
-                  </div>
-
-                  {clientIdSavedMsg && (
-                    <span className="text-xs text-emerald-400 flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Client ID berhasil diperbarui!</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              <div className="p-2.5 bg-slate-900 border border-slate-800 rounded-xl text-[11px] text-slate-400 space-y-1">
-                <div className="font-semibold text-slate-300 flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Solusi Paling Direkomendasikan:</span>
-                </div>
-                <p>
-                  Untuk kemudahan tanpa batasan domain atau otorisasi Client ID yang rumit, Anda dapat langsung mengaktifkan <strong className="text-emerald-400">Integrasi Google Apps Script & Google Sheets</strong> di panel atas. Seluruh naskah soal dan nilai siswa tersimpan otomatis di Google Drive dan Google Sheets guru.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Cloud Backups File List */}
-        <div className="pt-2 border-t border-slate-800 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-              <FolderOpen className="w-4 h-4 text-indigo-400" />
-              <span>Daftar File Backup di Folder Google Drive ({driveFiles.length} File)</span>
-            </div>
-
-            {driveToken && (
-              <button
-                onClick={() => fetchDriveBackups(driveToken)}
-                disabled={isLoadingFileList}
-                className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingFileList ? "animate-spin" : ""}`} />
-                <span>Segarkan</span>
-              </button>
-            )}
+          <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl">
+            <div className="text-xs font-bold text-slate-200">2. Nilai &amp; AI Diagnosis</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Lembar nilai siswa dan diagnosis pengayaan/remidi dicatat di Google Sheets.</div>
           </div>
-
-          {isLoadingFileList ? (
-            <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
-              <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-              <span>Memuat file backup dari folder Google Drive...</span>
-            </div>
-          ) : driveFiles.length === 0 ? (
-            <div className="p-5 rounded-2xl bg-[#161618] border border-slate-800 text-center text-xs text-slate-400">
-              {driveToken
-                ? "Belum ada file backup di folder SlideExam_CBT. Klik 'Backup ke Google Drive' untuk mengunggah cadangan pertama."
-                : "Hubungkan akun Google Drive untuk melihat dan memulihkan arsip data dari cloud."}
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-60 overflow-y-auto">
-              {driveFiles.map((f) => (
-                <div
-                  key={f.id}
-                  className="p-3.5 bg-[#161618] border border-slate-800 rounded-xl flex items-center justify-between gap-3 text-xs hover:border-slate-700 transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg">
-                      <FileJson className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="font-semibold text-white font-mono text-xs">{f.name}</div>
-                      <div className="text-[11px] text-slate-400">
-                        Dibuat: {f.createdTime ? new Date(f.createdTime).toLocaleString("id-ID") : "-"}
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => handleRestoreFromDriveFile(f)}
-                    disabled={isSyncingDrive}
-                    className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
-                  >
-                    <CloudDownload className="w-3.5 h-3.5" />
-                    <span>Pulihkan dari File Ini</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl">
+            <div className="text-xs font-bold text-slate-200">3. Cadangan Offline</div>
+            <div className="text-[11px] text-slate-400 mt-0.5">Snapshot data dapat diunduh ke file .json lokal kapan saja di bawah ini.</div>
+          </div>
         </div>
       </div>
 
