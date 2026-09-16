@@ -148,7 +148,7 @@ export const sampleInitialTokens: StudentTokenItem[] = [
   {
     id: "tok-1",
     examCode: "INF-X-CBT",
-    token: "SLIDE7",
+    token: "TKN01",
     studentName: "Aditya Pratama Putra",
     nisn: "0078123401",
     className: "X MIPA 1",
@@ -159,7 +159,7 @@ export const sampleInitialTokens: StudentTokenItem[] = [
   {
     id: "tok-2",
     examCode: "INF-X-CBT",
-    token: "SLIDE7",
+    token: "TKN02",
     studentName: "Bella Safitri Anggraini",
     nisn: "0078123402",
     className: "X MIPA 1",
@@ -170,7 +170,7 @@ export const sampleInitialTokens: StudentTokenItem[] = [
   {
     id: "tok-3",
     examCode: "INF-X-CBT",
-    token: "SLIDE7",
+    token: "TKN03",
     studentName: "Citra Lestari",
     nisn: "0078123403",
     className: "X MIPA 1",
@@ -181,7 +181,7 @@ export const sampleInitialTokens: StudentTokenItem[] = [
   {
     id: "tok-4",
     examCode: "INF-X-CBT",
-    token: "SLIDE7",
+    token: "TKN04",
     studentName: "Dimas Arya Wijaya",
     nisn: "0078123404",
     className: "X MIPA 1",
@@ -192,7 +192,7 @@ export const sampleInitialTokens: StudentTokenItem[] = [
   {
     id: "tok-5",
     examCode: "INF-X-CBT",
-    token: "SLIDE7",
+    token: "TKN05",
     studentName: "Eka Nurhaliza",
     nisn: "0078123405",
     className: "X MIPA 1",

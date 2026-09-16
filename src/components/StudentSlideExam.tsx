@@ -40,7 +40,8 @@ import {
   Cloud,
   RefreshCw,
   FileSpreadsheet,
-  Info
+  Info,
+  Play
 } from "lucide-react";
 import {
   ExamPackage,
@@ -53,8 +54,8 @@ import {
 } from "../types";
 import { StudentResultView } from "./StudentResultView";
 import { prepareStudentExamQuestions } from "../utils/shuffle";
-import { validateExamToken, normalizeToken, deduplicateStudentTokens } from "../utils/tokenValidator";
-import { getStudentTokens, saveActiveStudentSession } from "../utils/storage";
+import { validateStudentLoginToken, validateExamToken, normalizeToken, deduplicateStudentTokens } from "../utils/tokenValidator";
+import { getStudentTokens, saveActiveStudentSession, getActiveStudentSession, getExamHistory } from "../utils/storage";
 import { broadcastLiveSession, subscribeToSessionResets } from "../utils/liveSync";
 import { syncStudentSessionToGAS, fetchStudentRosterFromGAS, getGasConfig } from "../utils/gasService";
 import { syncStudentSessionToFirestore } from "../utils/firestoreService";
@@ -160,17 +161,33 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
   const [loginNisn, setLoginNisn] = useState("");
   const [loginClass, setLoginClass] = useState(() => exam.teacherProfile.gradeLevel || "");
   const [loginExamCode, setLoginExamCode] = useState(() => exam.code);
-  const [loginToken, setLoginToken] = useState(() => initialToken || exam.sessionToken || "");
+  // Student Login Token: Students MUST enter their own student login token, NOT session token!
+  const [loginToken, setLoginToken] = useState<string>(() => {
+    if (initialToken && initialToken !== exam.sessionToken && initialToken !== exam.code) {
+      return initialToken.trim().toUpperCase();
+    }
+    return "";
+  });
   const [loginError, setLoginError] = useState<string | null>(null);
 
-  // Sync login fields when exam code, session token, or grade level change
+  // Dialog / Modal for choosing session action: Mulai Ulang, Lanjutkan Sesi, Kumpulkan
+  const [sessionActionPrompt, setSessionActionPrompt] = useState<{
+    show: boolean;
+    existingSession: StudentExamSession;
+    targetExam: ExamPackage;
+  } | null>(null);
+
+  // Confirmation modal to restart exam while inside the slide exam
+  const [showResetConfirmModal, setShowResetConfirmModal] = useState<boolean>(false);
+
+  // Sync login fields when exam code or grade level change
   useEffect(() => {
     setLoginExamCode(exam.code);
     setLoginClass((prev) => (!prev ? exam.teacherProfile.gradeLevel || "" : prev));
-    if (!loginToken && (initialToken || exam.sessionToken)) {
-      setLoginToken(initialToken || exam.sessionToken || "");
+    if (initialToken && initialToken !== exam.sessionToken && initialToken !== exam.code && !loginToken) {
+      setLoginToken(initialToken.trim().toUpperCase());
     }
-  }, [exam.code, exam.sessionToken, exam.teacherProfile.gradeLevel, initialToken]);
+  }, [exam.code, exam.teacherProfile.gradeLevel, initialToken, exam.sessionToken]);
 
   // Automatically maintain dropdown mode when availableStudents roster is loaded
   useEffect(() => {
@@ -269,29 +286,24 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
       // 3. Set kelas otomatis sesuai data profil
       setLoginClass(student.className || exam.teacherProfile.gradeLevel || "Kelas X");
 
-      // 4. Set token if available
-      if (student.token) {
-        setLoginToken(student.token);
-      } else if (exam.sessionToken) {
-        setLoginToken(exam.sessionToken);
-      }
-
+      // 4. Do NOT auto-fill token when selecting name - student must enter their own Student Login Token!
+      // This enforces requirement #1 (siswa harus memasukkan token login siswa)
       if (loginError) setLoginError(null);
     }
   };
 
-  // Real-time Token Validator
+  // Real-time Token Validator strictly verifying student login token (rejecting session token)
   const tokenValidation = React.useMemo(() => {
     if (!loginToken.trim()) return null;
-    return validateExamToken(loginToken, exam, tokens, allExams);
-  }, [loginToken, exam, tokens, allExams]);
+    return validateStudentLoginToken(loginToken, exam, tokens, loginStudentName, allExams);
+  }, [loginToken, exam, tokens, loginStudentName, allExams]);
 
   // Handle token input change with auto-fill matching personal student token
   const handleTokenChange = (newToken: string) => {
     setLoginToken(newToken);
     if (loginError) setLoginError(null);
 
-    const validation = validateExamToken(newToken, exam, tokens, allExams);
+    const validation = validateStudentLoginToken(newToken, exam, tokens, loginStudentName, allExams);
     if (validation.isValid && validation.matchedStudent) {
       const matched = validation.matchedStudent;
       const foundIdx = availableStudents.findIndex(
@@ -314,13 +326,12 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
     }
   };
 
-  // Auto-fill student if initial token matches student token
+  // Auto-fill student if initial token matches student token (NOT session token)
   useEffect(() => {
-    const activeTok = initialToken || exam.sessionToken;
-    if (activeTok) {
-      handleTokenChange(activeTok);
+    if (initialToken && initialToken !== exam.sessionToken && initialToken !== exam.code) {
+      handleTokenChange(initialToken.trim().toUpperCase());
     }
-  }, [initialToken, exam.sessionToken, availableStudents]);
+  }, [initialToken, exam.sessionToken, exam.code, availableStudents]);
 
   // Active Session State
   const [session, setSession] = useState<StudentExamSession | null>(currentSession);
@@ -558,29 +569,44 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
   const queueSessionLiveSync = (targetSession: StudentExamSession, immediate = false) => {
     if (isTeacherTrial || !targetSession || !targetSession.id) return;
 
-    // 1. Broadcast locally (cross-tab)
-    broadcastLiveSession(targetSession);
+    const sessionWithTimestamps: StudentExamSession = {
+      ...targetSession,
+      updatedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
 
-    // 2. Clear any pending debounced sync
+    // 1. Broadcast locally (cross-tab 0ms)
+    broadcastLiveSession(sessionWithTimestamps);
+
+    // 2. Always immediately push to Express Server /api/sessions (free, persistent to disk, zero quota impact)
+    try {
+      fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sessionWithTimestamps),
+      }).catch(() => {});
+    } catch {}
+
+    // 3. Debounce cloud sync (Firestore & GAS)
     if (syncDebounceTimerRef.current) {
       clearTimeout(syncDebounceTimerRef.current);
       syncDebounceTimerRef.current = null;
     }
 
     if (immediate) {
-      syncStudentSessionToFirestore(targetSession).catch(() => {});
-      syncStudentSessionToGAS(targetSession).catch(() => {});
+      syncStudentSessionToFirestore(sessionWithTimestamps).catch(() => {});
+      syncStudentSessionToGAS(sessionWithTimestamps).catch(() => {});
       return;
     }
 
-    // Debounce rapid typing/clicking by 1.2 seconds
+    // Debounce rapid typing/clicking by 1.5 seconds for cloud
     syncDebounceTimerRef.current = setTimeout(() => {
-      syncStudentSessionToFirestore(targetSession).catch(() => {});
-      syncStudentSessionToGAS(targetSession).catch(() => {});
-    }, 1200);
+      syncStudentSessionToFirestore(sessionWithTimestamps).catch(() => {});
+      syncStudentSessionToGAS(sessionWithTimestamps).catch(() => {});
+    }, 1500);
   };
 
-  // Heartbeat to proctor dashboard every 5 seconds (updates online status, elapsed time, current slide)
+  // Heartbeat to proctor dashboard every 3.5 seconds (updates online status, elapsed time, current slide)
   useEffect(() => {
     if (!isLoggedIn || isSubmitted || !session || isTeacherTrial) return;
 
@@ -589,10 +615,13 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
       if (!activeSess || activeSess.status !== "in_progress") return;
 
       const elapsed = Math.max(0, exam.durationMinutes * 60 - secondsRemaining);
+      const nowIso = new Date().toISOString();
       const updatedHeartbeat: StudentExamSession = {
         ...activeSess,
         currentSlideIndex,
         timeSpentSeconds: elapsed,
+        updatedAt: nowIso,
+        lastActiveAt: nowIso,
       };
 
       // Heartbeat updates live server session registry directly (0 quota cost, fast)
@@ -617,7 +646,7 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
 
       // Cross-tab broadcast for instant local monitoring
       broadcastLiveSession(updatedHeartbeat);
-    }, 5000);
+    }, 3500);
 
     return () => clearInterval(interval);
   }, [isLoggedIn, isSubmitted, session?.id, currentSlideIndex, secondsRemaining, isTeacherTrial, exam.durationMinutes]);
@@ -773,6 +802,110 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
     requestedExamCode.trim() !== exam.id
   );
 
+  // Helper to start fresh session
+  const startFreshSession = (activeTargetExam: ExamPackage) => {
+    const preparedQuestions = prepareStudentExamQuestions(activeTargetExam);
+
+    const newSession: StudentExamSession = {
+      id: `sess-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      examId: activeTargetExam.id,
+      examCode: activeTargetExam.code,
+      examTitle: activeTargetExam.title,
+      subject: activeTargetExam.teacherProfile.subject,
+      studentName: loginStudentName.trim() || "Siswa Mandiri",
+      nisn: loginNisn.trim() || "0078" + Math.floor(100000 + Math.random() * 900000),
+      className: loginClass,
+      token: loginToken.trim().toUpperCase(),
+      currentSlideIndex: 0,
+      answers: {},
+      startTime: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      timeSpentSeconds: 0,
+      totalScoreEarned: 0,
+      maxScore: activeTargetExam.totalScore,
+      percentage: 0,
+      passed: false,
+      status: "in_progress",
+      shuffledQuestions: preparedQuestions,
+      cheatViolations: [],
+      violationCount: 0,
+    };
+
+    setSession(newSession);
+    setIsLoggedIn(true);
+    setIsSubmitted(false);
+    setCurrentSlideIndex(0);
+    setSecondsRemaining(activeTargetExam.durationMinutes * 60);
+    onSaveSession(newSession);
+    broadcastLiveSession(newSession);
+    queueSessionLiveSync(newSession, true);
+  };
+
+  // 3 Choices: Mulai Ulang, Lanjutkan Sesi, Kumpulkan
+  const handleOptionMulaiUlang = (targetExam: ExamPackage, oldSession: StudentExamSession) => {
+    const preparedQuestions = prepareStudentExamQuestions(targetExam);
+    const freshSession: StudentExamSession = {
+      ...oldSession,
+      id: `sess-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      examId: targetExam.id,
+      examCode: targetExam.code,
+      currentSlideIndex: 0,
+      answers: {},
+      startTime: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      timeSpentSeconds: 0,
+      totalScoreEarned: 0,
+      maxScore: targetExam.totalScore,
+      percentage: 0,
+      passed: false,
+      status: "in_progress",
+      shuffledQuestions: preparedQuestions,
+      cheatViolations: [],
+      violationCount: 0,
+    };
+
+    setSession(freshSession);
+    setIsLoggedIn(true);
+    setIsSubmitted(false);
+    setCurrentSlideIndex(0);
+    setSecondsRemaining(targetExam.durationMinutes * 60);
+    onSaveSession(freshSession);
+    broadcastLiveSession(freshSession);
+    queueSessionLiveSync(freshSession, true);
+    setSessionActionPrompt(null);
+  };
+
+  const handleOptionLanjutkan = (targetExam: ExamPackage, existingSession: StudentExamSession) => {
+    const elapsed = existingSession.timeSpentSeconds || Math.floor((Date.now() - new Date(existingSession.startTime).getTime()) / 1000);
+    const rem = Math.max(0, targetExam.durationMinutes * 60 - elapsed);
+    setSecondsRemaining(rem > 0 ? rem : targetExam.durationMinutes * 60);
+
+    const continuedSession: StudentExamSession = {
+      ...existingSession,
+      status: "in_progress",
+      updatedAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+
+    setSession(continuedSession);
+    setIsLoggedIn(true);
+    setIsSubmitted(false);
+    setCurrentSlideIndex(existingSession.currentSlideIndex || 0);
+    onSaveSession(continuedSession);
+    broadcastLiveSession(continuedSession);
+    queueSessionLiveSync(continuedSession, true);
+    setSessionActionPrompt(null);
+  };
+
+  const handleOptionKumpulkan = (targetExam: ExamPackage, existingSession: StudentExamSession) => {
+    setSessionActionPrompt(null);
+    setSession(existingSession);
+    setIsLoggedIn(true);
+    handleFinalSubmit("submitted", existingSession);
+  };
+
   // Login Validator
   const executeStartExam = (forceAdmin = false) => {
     let activeTargetExam = exam;
@@ -790,11 +923,11 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
         return;
       }
 
-      const validation = validateExamToken(loginToken, exam, tokens, allExams);
+      const validation = validateStudentLoginToken(loginToken, exam, tokens, loginStudentName, allExams);
       if (!validation.isValid) {
         setLoginError(
           validation.errorMessage ||
-            "Token ujian tidak sesuai. Masukkan token aktif yang diberikan oleh Pengawas atau Guru."
+            "Token Login Siswa tidak sesuai. Masukkan Token Login Siswa unik Anda dari Kartu Peserta Ujian."
         );
         return;
       }
@@ -807,43 +940,37 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
 
     setLoginError(null);
 
-    // Prepare randomized question order and options
-    const preparedQuestions = prepareStudentExamQuestions(activeTargetExam);
+    // Check if an existing session already exists for this student with prior progress
+    const activeLocal = getActiveStudentSession();
+    const historyList = getExamHistory();
+    const allCandidates = [activeLocal, ...historyList].filter(Boolean) as StudentExamSession[];
 
-    const newSession: StudentExamSession = {
-      id: `sess-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-      examId: activeTargetExam.id,
-      examCode: activeTargetExam.code,
-      examTitle: activeTargetExam.title,
-      subject: activeTargetExam.teacherProfile.subject,
-      studentName: loginStudentName.trim() || "Siswa Mandiri",
-      nisn: loginNisn.trim() || "0078" + Math.floor(100000 + Math.random() * 900000),
-      className: loginClass,
-      token: loginToken.trim().toUpperCase(),
-      currentSlideIndex: 0,
-      answers: {},
-      startTime: new Date().toISOString(),
-      timeSpentSeconds: 0,
-      totalScoreEarned: 0,
-      maxScore: activeTargetExam.totalScore,
-      percentage: 0,
-      passed: false,
-      status: "in_progress",
-      shuffledQuestions: preparedQuestions,
-      cheatViolations: [],
-      violationCount: 0,
-    };
+    const cleanName = loginStudentName.trim().toLowerCase();
+    const cleanToken = loginToken.trim().toUpperCase();
+    const cleanNisn = loginNisn.trim();
+    const cleanCode = activeTargetExam.code.trim().toUpperCase();
+    const cleanId = activeTargetExam.id.trim();
 
-    setSession(newSession);
-    setIsLoggedIn(true);
-    setCurrentSlideIndex(0);
-    setSecondsRemaining(activeTargetExam.durationMinutes * 60);
-    onSaveSession(newSession);
-    broadcastLiveSession(newSession);
-    if (!isTeacherTrial) {
-      syncStudentSessionToFirestore(newSession).catch(() => {});
-      syncStudentSessionToGAS(newSession).catch(() => {});
+    const existingMatch = allCandidates.find((s) => {
+      const matchExam = s.examId === cleanId || (s.examCode && s.examCode.trim().toUpperCase() === cleanCode);
+      if (!matchExam) return false;
+      const matchToken = s.token && s.token.trim().toUpperCase() === cleanToken;
+      const matchName = s.studentName && s.studentName.trim().toLowerCase() === cleanName;
+      const matchNisn = cleanNisn && s.nisn && s.nisn.trim() === cleanNisn;
+      return matchToken || (matchName && matchNisn) || (matchName && cleanName.length > 3);
+    });
+
+    if (existingMatch && (Object.keys(existingMatch.answers || {}).length > 0 || (existingMatch.currentSlideIndex || 0) > 0 || existingMatch.status === "submitted")) {
+      setSessionActionPrompt({
+        show: true,
+        existingSession: existingMatch,
+        targetExam: activeTargetExam,
+      });
+      return;
     }
+
+    // No existing session, start fresh directly
+    startFreshSession(activeTargetExam);
   };
 
   const handleStartExamLogin = (e: React.FormEvent) => {
@@ -1055,8 +1182,8 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
     }
   };
 
-  const handleFinalSubmit = (status: "submitted" | "timed_out" = "submitted") => {
-    const currentActiveSession = sessionRef.current || session;
+  const handleFinalSubmit = (status: "submitted" | "timed_out" = "submitted", sessionToSubmit?: StudentExamSession) => {
+    const currentActiveSession = sessionToSubmit || sessionRef.current || session;
     if (!currentActiveSession) return;
 
     let totalScoreEarned = 0;
@@ -1144,6 +1271,14 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
     setSession(finalizedSession);
     setIsSubmitted(true);
     setShowSummaryModal(false);
+    // Push immediately to Express server
+    try {
+      fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(finalizedSession),
+      }).catch(() => {});
+    } catch {}
     if (!isTeacherTrial) {
       onSubmitExam(finalizedSession);
       broadcastLiveSession(finalizedSession);
@@ -1495,14 +1630,14 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
 
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-slate-300">
-                  Token Akses Ujian <span className="text-rose-400">*</span>
+                <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                  <Key className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>Token Login Siswa</span>
+                  <span className="text-rose-400">*</span>
                 </label>
-                {exam.sessionToken && (
-                  <span className="text-[11px] font-mono text-slate-500">
-                    Sesi: <strong className="text-indigo-400">{exam.sessionToken}</strong>
-                  </span>
-                )}
+                <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full font-medium">
+                  Bukan Token Sesi
+                </span>
               </div>
               <div className="relative">
                 <input
@@ -1510,7 +1645,7 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                   required
                   value={loginToken}
                   onChange={(e) => handleTokenChange(e.target.value.toUpperCase())}
-                  placeholder="Masukkan Token Sesi / Token Siswa..."
+                  placeholder="Masukkan Token Login Siswa Anda..."
                   className="w-full pl-10 pr-4 py-3 bg-[#1a1a1c] border border-indigo-500/40 rounded-xl text-indigo-300 font-mono font-bold tracking-widest text-base focus:border-indigo-500 focus:outline-none uppercase"
                 />
                 <Key className="w-5 h-5 text-indigo-400 absolute left-3 top-3.5" />
@@ -1521,16 +1656,19 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                 <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-xs flex items-center gap-2 animate-in fade-in">
                   <CheckCircle2 className="w-4 h-4 shrink-0" />
                   <span className="font-semibold">
-                    {tokenValidation.type === "student_personal" && tokenValidation.matchedStudent
-                      ? `✓ Token Terverifikasi: ${tokenValidation.matchedStudent.studentName} (${tokenValidation.matchedStudent.className})`
-                      : tokenValidation.type === "exam_master" && tokenValidation.matchedExam
-                      ? `✓ Token Sesi Valid untuk: ${tokenValidation.matchedExam.title} (${tokenValidation.matchedExam.teacherProfile.subject})`
-                      : "✓ Token Terverifikasi & Siap Ujian"}
+                    {tokenValidation.matchedStudent
+                      ? `✓ Token Login Siswa Valid: ${tokenValidation.matchedStudent.studentName} (${tokenValidation.matchedStudent.className || loginClass})`
+                      : "✓ Token Login Siswa Terverifikasi"}
                   </span>
+                </div>
+              ) : tokenValidation && !tokenValidation.isValid && loginToken.trim() ? (
+                <div className="mt-2 p-2.5 bg-rose-950/40 border border-rose-500/30 rounded-xl text-rose-300 text-xs flex items-start gap-2 animate-in fade-in">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span className="leading-snug">{tokenValidation.errorMessage}</span>
                 </div>
               ) : (
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Masukkan token sesi bersama (misal: <strong>{exam.sessionToken}</strong>) atau token personal dari kartu ujian siswa.
+                  Masukkan Token Login Siswa unik Anda dari Kartu Peserta Ujian. Token Sesi Naskah Guru tidak dapat digunakan untuk memulai ujian.
                 </p>
               )}
             </div>
@@ -1556,7 +1694,7 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                 <div className="space-y-1">
                   <div className="font-semibold">{loginError}</div>
                   <div className="text-[11px] text-rose-300/80">
-                    Pastikan naskah ujian yang dipilih di atas sudah benar, atau hubungi Pengawas ruang untuk token aktif.
+                    Pastikan nama dan Token Login Siswa yang dimasukkan sesuai dengan Kartu Peserta Ujian Anda.
                   </div>
                 </div>
               </div>
@@ -1573,6 +1711,113 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
             </button>
           </form>
         </div>
+
+        {/* 3-CHOICE PROMPT MODAL FOR RETURNING STUDENTS */}
+        {sessionActionPrompt && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in">
+            <div className="bg-[#18181b] border border-slate-700 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-6">
+              <div className="text-center space-y-2">
+                <div className="w-14 h-14 mx-auto rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                  <Clock className="w-7 h-7" />
+                </div>
+                <h3 className="text-xl font-bold text-white">Sesi Pengerjaan Ditemukan</h3>
+                <p className="text-xs text-slate-400">
+                  Ditemukan riwayat pengerjaan sebelumnya untuk peserta ini. Silakan pilih tindakan yang ingin dilakukan:
+                </p>
+              </div>
+
+              {/* Student Session Details */}
+              <div className="p-4 rounded-2xl bg-[#121214] border border-slate-800 space-y-2 text-xs">
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Nama Siswa:</span>
+                  <strong className="text-white text-sm">{sessionActionPrompt.existingSession.studentName}</strong>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Kelas / No. Urut:</span>
+                  <span>{sessionActionPrompt.existingSession.className} • No. {sessionActionPrompt.existingSession.nisn}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Naskah Soal:</span>
+                  <span className="font-mono text-indigo-300 font-semibold">{sessionActionPrompt.targetExam.title} ({sessionActionPrompt.targetExam.code})</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Progres Jawaban:</span>
+                  <span className="font-semibold text-emerald-400">
+                    {Object.values(sessionActionPrompt.existingSession.answers || {}).filter((a: any) => a?.selectedOption && a?.selectedOption !== "{}").length} dari {sessionActionPrompt.targetExam.questions.length} Soal Dijawab
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-slate-400">Status Sesi:</span>
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-semibold ${sessionActionPrompt.existingSession.status === "submitted" ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" : "bg-amber-500/20 text-amber-300 border border-amber-500/30"}`}>
+                    {sessionActionPrompt.existingSession.status === "submitted" ? "Sudah Dikumpulkan" : "Sedang Dikerjakan"}
+                  </span>
+                </div>
+              </div>
+
+              {/* 3 Action Buttons */}
+              <div className="space-y-2.5">
+                {/* 1. Lanjutkan Sesi Terakhir */}
+                <button
+                  type="button"
+                  id="btn-lanjutkan-sesi"
+                  onClick={() => handleOptionLanjutkan(sessionActionPrompt.targetExam, sessionActionPrompt.existingSession)}
+                  className="w-full py-3 px-4 rounded-xl font-bold text-sm bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-between shadow-lg shadow-indigo-950 transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3">
+                    <Play className="w-5 h-5 text-indigo-200 group-hover:scale-110 transition-transform" />
+                    <div className="text-left">
+                      <div className="font-bold">Lanjutkan Sesi Terakhir</div>
+                      <div className="text-[11px] text-indigo-200 font-normal">Lanjutkan menjawab soal dari slide terakhir</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-indigo-300" />
+                </button>
+
+                {/* 2. Mulai Ulang (Reset dari Awal) */}
+                <button
+                  type="button"
+                  id="btn-mulai-ulang-sesi"
+                  onClick={() => handleOptionMulaiUlang(sessionActionPrompt.targetExam, sessionActionPrompt.existingSession)}
+                  className="w-full py-3 px-4 rounded-xl font-bold text-sm bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3">
+                    <RotateCcw className="w-5 h-5 text-amber-400 group-hover:rotate-180 transition-transform duration-300" />
+                    <div className="text-left">
+                      <div className="font-bold">Mulai Ulang (Reset dari Awal)</div>
+                      <div className="text-[11px] text-amber-400/80 font-normal">Kosongkan semua jawaban dan mulai ujian dari nomor 1</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-amber-400" />
+                </button>
+
+                {/* 3. Kumpulkan Lembar Jawaban */}
+                <button
+                  type="button"
+                  id="btn-kumpulkan-lembar-jawaban"
+                  onClick={() => handleOptionKumpulkan(sessionActionPrompt.targetExam, sessionActionPrompt.existingSession)}
+                  className="w-full py-3 px-4 rounded-xl font-bold text-sm bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 flex items-center justify-between transition-all cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3">
+                    <Send className="w-5 h-5 text-emerald-400 group-hover:translate-x-0.5 transition-transform" />
+                    <div className="text-left">
+                      <div className="font-bold">Kumpulkan Lembar Jawaban</div>
+                      <div className="text-[11px] text-emerald-400/80 font-normal">Selesaikan dan kirim jawaban saat ini untuk dinilai</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-emerald-400" />
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSessionActionPrompt(null)}
+                className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 transition-colors"
+              >
+                Batal & Kembali ke Formulir Login
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1704,8 +1949,28 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
           </button>
         </div>
 
-        {/* Right: Matrix Drawer & Fullscreen Toggle */}
+        {/* Right: Mulai Ulang, Kumpulkan, Matrix Drawer & Fullscreen Toggle */}
         <div className="flex items-center gap-2">
+          <button
+            id="open-reset-confirm-btn"
+            onClick={() => setShowResetConfirmModal(true)}
+            className="px-2.5 py-2 bg-[#1a1a1c] hover:bg-rose-950/40 hover:text-rose-300 text-slate-400 rounded-xl text-xs font-semibold border border-slate-800 flex items-center gap-1.5 transition-all cursor-pointer"
+            title="Mulai Ulang Ujian dari awal (Nomor 1)"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-rose-400" />
+            <span className="hidden sm:inline">Mulai Ulang</span>
+          </button>
+
+          <button
+            id="open-kumpulkan-btn"
+            onClick={() => setShowSummaryModal(true)}
+            className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            title="Kumpulkan Jawaban Ujian"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>Kumpulkan</span>
+          </button>
+
           <button
             id="open-slide-matrix-btn"
             onClick={() => setShowMatrixDrawer(true)}
@@ -2550,6 +2815,44 @@ export const StudentSlideExam: React.FC<StudentSlideExamProps> = ({
                 className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-lg shadow-emerald-950 cursor-pointer transition-all"
               >
                 Ya, Kumpulkan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Confirmation Modal during active exam */}
+      {showResetConfirmModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-[#121214] rounded-3xl p-6 sm:p-8 max-w-md w-full border border-rose-500/40 shadow-2xl space-y-5 text-center text-slate-200">
+            <div className="w-14 h-14 bg-rose-600/20 border border-rose-500/30 text-rose-400 rounded-2xl flex items-center justify-center mx-auto shadow-lg shadow-rose-950">
+              <RotateCcw className="w-8 h-8 text-rose-400" />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-lg font-black text-white">Mulai Ulang Pengerjaan Ujian?</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Seluruh jawaban yang telah Anda pilih pada naskah ini akan dikosongkan dan ujian akan dimulai kembali dari nomor 1 dengan waktu penuh.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowResetConfirmModal(false)}
+                className="flex-1 py-3 px-4 rounded-xl text-xs font-bold bg-[#1a1a1c] hover:bg-slate-800 text-slate-300 border border-slate-700 transition-colors cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowResetConfirmModal(false);
+                  if (session) {
+                    handleOptionMulaiUlang(exam, session);
+                  }
+                }}
+                className="flex-1 py-3 px-4 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white transition-colors cursor-pointer shadow-lg shadow-rose-950"
+              >
+                Ya, Mulai Ulang
               </button>
             </div>
           </div>

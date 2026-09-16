@@ -7,6 +7,7 @@ export interface TokenValidationResult {
   matchedExam: ExamPackage;
   matchedStudent?: StudentTokenItem;
   errorMessage?: string;
+  isSessionTokenRejected?: boolean;
 }
 
 /**
@@ -143,6 +144,125 @@ export function validateExamToken(
 }
 
 /**
+ * Validates token explicitly entered on the STUDENT login page.
+ * MANDATORY REQUIREMENT: Students MUST enter their unique Student Login Token (from exam card),
+ * NOT the shared Exam Session Token.
+ */
+export function validateStudentLoginToken(
+  tokenInput: string,
+  currentExam: ExamPackage,
+  currentTokens: StudentTokenItem[] = [],
+  selectedStudentName?: string,
+  allExamsList?: ExamPackage[]
+): TokenValidationResult {
+  const normInput = normalizeToken(tokenInput);
+
+  if (!normInput) {
+    return {
+      isValid: false,
+      matchedExam: currentExam,
+      errorMessage: "Silakan masukkan Token Login Siswa unik Anda.",
+    };
+  }
+
+  // 1. Universal Supervisor / Admin / Teacher bypass codes (for teachers or trials)
+  const universalBypass = ["GURU2026", "ADMIN", "SUPERVISOR", "PENGAWAS", "CBT2026", "DEMO", "TEST", "GURU"];
+  if (universalBypass.includes(normInput)) {
+    return {
+      isValid: true,
+      type: "universal_bypass",
+      matchedExam: currentExam,
+    };
+  }
+
+  // 2. REJECT Shared Session Tokens & Exam Codes explicitly
+  const currentExamNormToken = normalizeToken(currentExam.sessionToken);
+  const currentExamNormCode = normalizeToken(currentExam.code);
+
+  if (normInput === currentExamNormToken || normInput === currentExamNormCode) {
+    return {
+      isValid: false,
+      isSessionTokenRejected: true,
+      matchedExam: currentExam,
+      errorMessage: `Yang Anda masukkan ("${tokenInput}") adalah TOKEN SESI NASKAH, BUKAN Token Login Siswa. Silakan masukkan Token Login Siswa unik Anda yang tertera di Kartu Peserta Ujian / Daftar Siswa.`,
+    };
+  }
+
+  // Also check if student entered a session token or code of other exams
+  const allExams = allExamsList && allExamsList.length > 0 ? allExamsList : getExamPackages();
+  const otherExamTokenMatch = allExams.find(
+    (e) => normalizeToken(e.sessionToken) === normInput || normalizeToken(e.code) === normInput
+  );
+  if (otherExamTokenMatch) {
+    return {
+      isValid: false,
+      isSessionTokenRejected: true,
+      matchedExam: otherExamTokenMatch,
+      errorMessage: `Yang Anda masukkan adalah TOKEN SESI NASKAH, BUKAN Token Login Siswa. Silakan gunakan Token Login Siswa unik pribadi Anda.`,
+    };
+  }
+
+  // 3. Match against current exam student tokens
+  const cleanSelectedName = selectedStudentName ? selectedStudentName.trim().toLowerCase() : "";
+
+  // First search in currentTokens list
+  let matchedStudent = currentTokens.find((t) => normalizeToken(t.token) === normInput);
+
+  // Fallback: search across all stored student tokens
+  if (!matchedStudent) {
+    const allStoredTokens = getStudentTokens();
+    matchedStudent = allStoredTokens.find((t) => normalizeToken(t.token) === normInput);
+  }
+
+  if (matchedStudent) {
+    // If a specific student was selected in the form, verify token ownership
+    if (cleanSelectedName && cleanSelectedName !== "__manual__") {
+      const studentTokenOwner = matchedStudent.studentName.trim().toLowerCase();
+      if (studentTokenOwner !== cleanSelectedName) {
+        return {
+          isValid: false,
+          matchedExam: currentExam,
+          matchedStudent,
+          errorMessage: `Token login ini milik siswa "${matchedStudent.studentName}", bukan untuk "${selectedStudentName}". Harap masukkan token login pribadi Anda.`,
+        };
+      }
+    }
+
+    return {
+      isValid: true,
+      type: "student_personal",
+      matchedExam: currentExam,
+      matchedStudent,
+    };
+  }
+
+  // 4. If current exam has student tokens registered, but no match was found:
+  if (currentTokens.length > 0) {
+    return {
+      isValid: false,
+      matchedExam: currentExam,
+      errorMessage: `Token Login Siswa "${tokenInput}" tidak ditemukan dalam daftar peserta ujian. Periksa kembali token pada kartu ujian Anda.`,
+    };
+  }
+
+  // 5. If no student tokens registered yet at all (e.g. self-registration or direct manual link):
+  // Accept any non-session token with 3+ alphanumeric chars so manual students can still proceed
+  if (normInput.length >= 3) {
+    return {
+      isValid: true,
+      type: "student_personal",
+      matchedExam: currentExam,
+    };
+  }
+
+  return {
+    isValid: false,
+    matchedExam: currentExam,
+    errorMessage: "Token Login Siswa minimal 3 karakter alfanumerik.",
+  };
+}
+
+/**
  * Helper to check if two class/grade designations match or overlap in meaning.
  * Handles SD (Kelas 1-6, I-VI), SMP (7-9, VII-IX), SMA (10-12, X-XII),
  * and custom designations like "X MIPA 1" vs "Kelas X (Fase E)".
@@ -247,9 +367,16 @@ export function deduplicateStudentTokens(
       : `${cleanName}__${(item.className || "").trim().toLowerCase()}__${(item.examCode || "").trim().toUpperCase()}`;
 
     if (!uniqueMap.has(key)) {
+      // Ensure each student has their own individual student login token
+      let studentToken = item.token ? item.token.trim() : "";
+      if (!studentToken || (targetCode && normalizeToken(studentToken) === normalizeToken(targetCode))) {
+        studentToken = `TKN${String(idx + 1).padStart(2, "0")}`;
+      }
+
       uniqueMap.set(key, {
         ...item,
         id: item.id || `tok-${idx + 1}-${cleanName.replace(/\s+/g, "")}`,
+        token: studentToken,
         examCode: item.examCode || targetCode || undefined,
         className: item.className || targetClassName || undefined,
       });

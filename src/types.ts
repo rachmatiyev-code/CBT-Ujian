@@ -148,6 +148,8 @@ export interface StudentExamSession {
   deviceInfo?: string;
   cheatViolations?: CheatingViolationLog[];
   violationCount?: number;
+  lastActiveAt?: string;
+  updatedAt?: string;
 }
 
 export interface AiHotsChallenge {

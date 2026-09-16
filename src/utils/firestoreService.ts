@@ -39,7 +39,13 @@ function sanitizeForFirestore<T>(data: T): T {
   return JSON.parse(JSON.stringify(data, (_, v) => (v === undefined ? null : v)));
 }
 
-let quotaExceededState = false;
+let quotaExceededState = (() => {
+  try {
+    return sessionStorage.getItem("cbt_firestore_quota_exceeded") === "1";
+  } catch {
+    return false;
+  }
+})();
 const quotaListeners = new Set<(exceeded: boolean) => void>();
 
 export function isQuotaExceeded(): boolean {
@@ -56,11 +62,17 @@ export function subscribeQuotaStatus(cb: (exceeded: boolean) => void): () => voi
 
 export function markQuotaExceeded(_reason: string): void {
   quotaExceededState = true;
+  try {
+    sessionStorage.setItem("cbt_firestore_quota_exceeded", "1");
+  } catch {}
   quotaListeners.forEach((fn) => fn(true));
 }
 
 export function resetQuotaCheck(): void {
   quotaExceededState = false;
+  try {
+    sessionStorage.removeItem("cbt_firestore_quota_exceeded");
+  } catch {}
   quotaListeners.forEach((fn) => fn(false));
 }
 
@@ -79,32 +91,33 @@ export async function syncExamToFirestore(
     const cleanExam = sanitizeForFirestore(exam);
     const cleanTokens = tokens ? sanitizeForFirestore(tokens) : [];
 
-    // 1. Simpan ke koleksi /exams/{examId}
-    const examDocRef = doc(db, "exams", exam.id);
-    await setDoc(examDocRef, {
-      ...cleanExam,
-      tokens: cleanTokens,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-
-    // 2. Simpan index cepat ke koleksi /examCodes/{code}
-    if (exam.code) {
-      const codeDocRef = doc(db, "examCodes", exam.code.trim().toUpperCase());
-      await setDoc(codeDocRef, {
-        examId: exam.id,
-        code: exam.code.trim().toUpperCase(),
-        title: exam.title,
-        sessionToken: exam.sessionToken || "",
-        exam: cleanExam,
+    // 1. Simpan ke koleksi /exams/{examId} jika kuota masih tersedia
+    if (!isQuotaExceeded()) {
+      const examDocRef = doc(db, "exams", exam.id);
+      await setDoc(examDocRef, {
+        ...cleanExam,
         tokens: cleanTokens,
         updatedAt: new Date().toISOString(),
       }, { merge: true });
-    }
 
-    firestoreSuccess = true;
+      // 2. Simpan index cepat ke koleksi /examCodes/{code}
+      if (exam.code) {
+        const codeDocRef = doc(db, "examCodes", exam.code.trim().toUpperCase());
+        await setDoc(codeDocRef, {
+          examId: exam.id,
+          code: exam.code.trim().toUpperCase(),
+          title: exam.title,
+          sessionToken: exam.sessionToken || "",
+          exam: cleanExam,
+          tokens: cleanTokens,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+      firestoreSuccess = true;
+    }
   } catch (err: any) {
     console.warn("[Firestore] Gagal menyimpan naskah ke Firestore:", err);
-    if (err?.code === "resource-exhausted") {
+    if (err?.code === "resource-exhausted" || (err?.message && err.message.toLowerCase().includes("quota"))) {
       markQuotaExceeded("Firestore quota exceeded");
     }
   }
@@ -240,19 +253,32 @@ export async function syncStudentSessionToFirestore(
   }
 
   let firestoreOk = false;
-  try {
-    const cleanSession = sanitizeForFirestore(session);
-    const sessionDocRef = doc(db, "sessions", session.id);
-    await setDoc(sessionDocRef, {
-      ...cleanSession,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-    firestoreOk = true;
-  } catch (err: any) {
-    console.warn("[Firestore] Gagal menyimpan sesi ke Firestore:", err);
+  if (!isQuotaExceeded()) {
+    try {
+      const cleanSession = sanitizeForFirestore(session);
+      const sessionDocRef = doc(db, "sessions", session.id);
+      await setDoc(sessionDocRef, {
+        ...cleanSession,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      firestoreOk = true;
+    } catch (err: any) {
+      console.warn("[Firestore] Gagal menyimpan sesi ke Firestore:", err);
+      if (err?.code === "resource-exhausted" || (err?.message && err.message.toLowerCase().includes("quota"))) {
+        markQuotaExceeded("Firestore write quota exceeded");
+      }
+    }
   }
 
-  // Cadangan ke Google Sheets via GAS
+  // Cadangan utama instan ke Express Server & Google Sheets via GAS
+  try {
+    fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(session),
+    }).catch(() => {});
+  } catch {}
+
   try {
     syncStudentSessionToGAS(session).catch(() => {});
   } catch {}
@@ -261,7 +287,7 @@ export async function syncStudentSessionToFirestore(
 }
 
 /**
- * Mengambil seluruh sesi ujian dari Firestore
+ * Mengambil seluruh sesi ujian dari Server, Firestore & GAS
  */
 export async function fetchExamSessions(
   arg1?: string,
@@ -285,7 +311,25 @@ export async function fetchExamSessions(
     }
   }
 
-  // 1. Ambil dari Firestore
+  // 1. Ambil dari Express Server Memory/Disk (/api/sessions) - Paling cepat & paling real-time!
+  try {
+    const url = targetCode || targetId
+      ? `/api/sessions/by-exam/${encodeURIComponent(targetCode || targetId || "")}`
+      : `/api/sessions`;
+    const res = await fetch(url);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.sessions)) {
+        data.sessions.forEach((s: StudentExamSession) => {
+          if (s && s.id) {
+            sessionsMap.set(s.id, s);
+          }
+        });
+      }
+    }
+  } catch {}
+
+  // 2. Ambil dari Firestore
   try {
     if (targetCode || targetId) {
       const queries = [];
@@ -299,21 +343,47 @@ export async function fetchExamSessions(
       snaps.forEach((snap) => {
         snap.forEach((d) => {
           const s = d.data() as StudentExamSession;
-          if (s && s.id) sessionsMap.set(s.id, s);
+          if (s && s.id) {
+            const existing = sessionsMap.get(s.id);
+            if (!existing) {
+              sessionsMap.set(s.id, s);
+            } else {
+              const existingTime = new Date(existing.lastActiveAt || existing.updatedAt || existing.startTime || 0).getTime();
+              const newTime = new Date(s.lastActiveAt || s.updatedAt || s.startTime || 0).getTime();
+              const existingAnswersCount = existing.answers ? Object.keys(existing.answers).length : 0;
+              const newAnswersCount = s.answers ? Object.keys(s.answers).length : 0;
+              if (newAnswersCount > existingAnswersCount || newTime > existingTime) {
+                sessionsMap.set(s.id, s);
+              }
+            }
+          }
         });
       });
     } else {
       const snap = await getDocs(query(collection(db, "sessions")));
       snap.forEach((d) => {
         const s = d.data() as StudentExamSession;
-        if (s && s.id) sessionsMap.set(s.id, s);
+        if (s && s.id) {
+          const existing = sessionsMap.get(s.id);
+          if (!existing) {
+            sessionsMap.set(s.id, s);
+          } else {
+            const existingTime = new Date(existing.lastActiveAt || existing.updatedAt || existing.startTime || 0).getTime();
+            const newTime = new Date(s.lastActiveAt || s.updatedAt || s.startTime || 0).getTime();
+            const existingAnswersCount = existing.answers ? Object.keys(existing.answers).length : 0;
+            const newAnswersCount = s.answers ? Object.keys(s.answers).length : 0;
+            if (newAnswersCount > existingAnswersCount || newTime > existingTime) {
+              sessionsMap.set(s.id, s);
+            }
+          }
+        }
       });
     }
   } catch (err) {
     console.warn("[Firestore] Error fetching sessions from Firestore:", err);
   }
 
-  // 2. Ambil dari GAS untuk memastikan tidak ada sesi yang tertinggal
+  // 3. Ambil dari GAS untuk memastikan tidak ada sesi yang tertinggal
   try {
     const gasSessions = await fetchSessionsGAS(targetCode || targetId);
     if (Array.isArray(gasSessions)) {
@@ -371,54 +441,68 @@ export function subscribeToExamSessions(
   const targetCode = examCode?.trim().toUpperCase();
   const targetId = examId?.trim();
 
-  // Firestore Realtime Listener
+  // Firestore Realtime Listener (hanya jika kuota belum habis)
   let unsubscribeFirestore: (() => void) | null = null;
-  try {
-    let q = query(collection(db, "sessions"));
-    if (targetCode && targetCode.length <= 15) {
-      q = query(collection(db, "sessions"), where("examCode", "==", targetCode));
-    } else if (targetId) {
-      q = query(collection(db, "sessions"), where("examId", "==", targetId));
-    }
-
-    unsubscribeFirestore = onSnapshot(
-      q,
-      (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          const session = change.doc.data() as StudentExamSession;
-          if (change.type === "removed") {
-            sessionsMap.delete(change.doc.id);
-          } else if (session && session.id) {
-            sessionsMap.set(session.id, session);
-          }
-        });
-        emitSessions();
-      },
-      (err) => {
-        console.warn("[Firestore] onSnapshot error:", err);
+  if (!isQuotaExceeded()) {
+    try {
+      let q = query(collection(db, "sessions"));
+      if (targetCode && targetCode.length <= 15) {
+        q = query(collection(db, "sessions"), where("examCode", "==", targetCode));
+      } else if (targetId) {
+        q = query(collection(db, "sessions"), where("examId", "==", targetId));
       }
-    );
-  } catch (e) {
-    console.warn("[Firestore] Listener setup error:", e);
+
+      unsubscribeFirestore = onSnapshot(
+        q,
+        (snapshot) => {
+          snapshot.docChanges().forEach((change) => {
+            const session = change.doc.data() as StudentExamSession;
+            if (change.type === "removed") {
+              sessionsMap.delete(change.doc.id);
+            } else if (session && session.id) {
+              sessionsMap.set(session.id, session);
+            }
+          });
+          emitSessions();
+        },
+        (err) => {
+          console.warn("[Firestore] onSnapshot error:", err);
+          if (err?.code === "resource-exhausted" || (err?.message && err.message.toLowerCase().includes("quota"))) {
+            markQuotaExceeded("Firestore read/listener quota exceeded");
+            if (unsubscribeFirestore) {
+              try { unsubscribeFirestore(); } catch {}
+              unsubscribeFirestore = null;
+            }
+          }
+        }
+      );
+    } catch (e) {
+      console.warn("[Firestore] Listener setup error:", e);
+    }
   }
 
-  // Polling fallback berkala untuk sinkronisasi data dari GAS & local storage
+  // Polling fallback berkala cepat dari Express Server /api/sessions & GAS
   const pollInterval = setInterval(async () => {
     if (!active) return;
     try {
-      const remote = await fetchSessionsGAS(targetCode || targetId);
-      let hasNew = false;
-      if (Array.isArray(remote)) {
-        remote.forEach((s) => {
-          if (s && s.id && !sessionsMap.has(s.id)) {
-            sessionsMap.set(s.id, s);
-            hasNew = true;
+      // 1. Ambil dari server Express lokal (/api/sessions) & GAS
+      const remoteSessions = await fetchExamSessions(targetId, targetCode);
+      let hasChanges = false;
+      if (Array.isArray(remoteSessions) && remoteSessions.length > 0) {
+        remoteSessions.forEach((s) => {
+          if (s && s.id) {
+            const existing = sessionsMap.get(s.id);
+            // Cek apakah ada pembaruan data atau jawaban
+            if (!existing || (s.updatedAt && (!existing.updatedAt || s.updatedAt > existing.updatedAt)) || Object.keys(s.answers || {}).length !== Object.keys(existing.answers || {}).length || s.currentSlideIndex !== existing.currentSlideIndex) {
+              sessionsMap.set(s.id, s);
+              hasChanges = true;
+            }
           }
         });
       }
-      if (hasNew) emitSessions();
+      if (hasChanges) emitSessions();
     } catch {}
-  }, 5000);
+  }, 2500);
 
   return () => {
     active = false;

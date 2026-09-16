@@ -207,6 +207,9 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
+  const historyRef = useRef<StudentExamSession[]>(history);
+  historyRef.current = history;
+
   // Auto-sync heartbeat & real-time LiveSync channel listener
   useEffect(() => {
     // 1. Subscribe to BroadcastChannel for instant cross-tab updates (0ms)
@@ -223,10 +226,18 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
         !incomingSession.examCode
       ) {
         if (onUpdateHistory) {
-          const existing = [...history];
-          const idx = existing.findIndex((h) => h.id === incomingSession.id);
+          const currentList = historyRef.current || [];
+          const existing = [...currentList];
+          const idx = existing.findIndex(
+            (h) =>
+              h.id === incomingSession.id ||
+              (h.studentName &&
+                incomingSession.studentName &&
+                h.studentName.trim().toLowerCase() === incomingSession.studentName.trim().toLowerCase() &&
+                h.token === incomingSession.token)
+          );
           if (idx >= 0) {
-            existing[idx] = incomingSession;
+            existing[idx] = { ...existing[idx], ...incomingSession };
           } else {
             existing.unshift(incomingSession);
           }
@@ -238,23 +249,69 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
     // 2. Initial immediate sync from cloud / server
     handleSyncCloud();
 
-    // 3. Realtime Firestore snapshot listener
-    const unsubscribeFirestore = subscribeToExamSessions(exam.code || exam.id, (remoteSessions) => {
+    // 3. Realtime Firestore snapshot listener + Express server fallback
+    const unsubscribeFirestore = subscribeToExamSessions(exam.id, exam.code, (remoteSessions) => {
       if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
-        onUpdateHistory(remoteSessions);
+        const currentList = historyRef.current || [];
+        const merged = [...currentList];
+        remoteSessions.forEach((rs) => {
+          const idx = merged.findIndex(
+            (m) =>
+              m.id === rs.id ||
+              (m.studentName &&
+                rs.studentName &&
+                m.studentName.trim().toLowerCase() === rs.studentName.trim().toLowerCase() &&
+                m.token === rs.token)
+          );
+          if (idx >= 0) {
+            merged[idx] = { ...merged[idx], ...rs };
+          } else {
+            merged.unshift(rs);
+          }
+        });
+        onUpdateHistory(merged);
       }
     });
 
-    // 4. Periodic fallback poll every 4 seconds
+    // 4. Periodic fallback poll every 2 seconds for real-time responsiveness
     const interval = setInterval(() => {
       fetchExamSessions(exam.id, exam.code)
         .then((remoteSessions) => {
           if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
-            onUpdateHistory(remoteSessions);
+            const currentList = historyRef.current || [];
+            const merged = [...currentList];
+            let changed = false;
+            remoteSessions.forEach((rs) => {
+              const idx = merged.findIndex(
+                (m) =>
+                  m.id === rs.id ||
+                  (m.studentName &&
+                    rs.studentName &&
+                    m.studentName.trim().toLowerCase() === rs.studentName.trim().toLowerCase() &&
+                    m.token === rs.token)
+              );
+              if (idx >= 0) {
+                if (
+                  merged[idx].status !== rs.status ||
+                  merged[idx].currentSlideIndex !== rs.currentSlideIndex ||
+                  (rs.updatedAt && rs.updatedAt !== merged[idx].updatedAt) ||
+                  Object.keys(rs.answers || {}).length !== Object.keys(merged[idx].answers || {}).length
+                ) {
+                  merged[idx] = { ...merged[idx], ...rs };
+                  changed = true;
+                }
+              } else {
+                merged.unshift(rs);
+                changed = true;
+              }
+            });
+            if (changed) {
+              onUpdateHistory(merged);
+            }
           }
         })
         .catch(() => {});
-    }, 4000);
+    }, 2000);
 
     return () => {
       unsubscribeLive();
