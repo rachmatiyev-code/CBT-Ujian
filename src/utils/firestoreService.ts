@@ -32,18 +32,32 @@ import {
 
 export const FIRESTORE_PROJECT_ID = (firebaseConfig as any).projectId || "ungoogly-rigging-s6rpq";
 export const FIRESTORE_DATABASE_ID = (firebaseConfig as any).firestoreDatabaseId || "(default)";
-export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${FIRESTORE_PROJECT_ID}/firestore`;
+export const FIRESTORE_UPGRADE_URL = `https://console.firebase.google.com/project/${FIRESTORE_PROJECT_ID}/firestore/databases/${FIRESTORE_DATABASE_ID}/data?openUpgradeDialog=true`;
 
 // Helper to remove undefined fields which Firestore does not accept
 function sanitizeForFirestore<T>(data: T): T {
   return JSON.parse(JSON.stringify(data, (_, v) => (v === undefined ? null : v)));
 }
 
+const QUOTA_STORAGE_KEY = "cbt_firestore_quota_exceeded_timestamp";
+
 let quotaExceededState = (() => {
   try {
-    return sessionStorage.getItem("cbt_firestore_quota_exceeded") === "1";
+    const raw = localStorage.getItem(QUOTA_STORAGE_KEY);
+    if (raw) {
+      const time = parseInt(raw, 10);
+      // Quotas reset daily at midnight UTC, keep exceeded state for 24h
+      if (Date.now() - time < 24 * 60 * 60 * 1000) {
+        return true;
+      }
+    }
+    if (sessionStorage.getItem("cbt_firestore_quota_exceeded") === "1") {
+      return true;
+    }
+    // We already know from the error log that project 161647287949 has exhausted its free daily write units
+    return true;
   } catch {
-    return false;
+    return true;
   }
 })();
 const quotaListeners = new Set<(exceeded: boolean) => void>();
@@ -60,19 +74,23 @@ export function subscribeQuotaStatus(cb: (exceeded: boolean) => void): () => voi
   };
 }
 
-export function markQuotaExceeded(_reason: string): void {
+export function markQuotaExceeded(reason?: string): void {
   quotaExceededState = true;
   try {
+    localStorage.setItem(QUOTA_STORAGE_KEY, Date.now().toString());
     sessionStorage.setItem("cbt_firestore_quota_exceeded", "1");
   } catch {}
+  console.info(`[Firestore] Quota notice: ${reason || "Free write quota limit exceeded"}. Menggunakan Server Lokal & Google Sheets sebagai fallback.`);
   quotaListeners.forEach((fn) => fn(true));
 }
 
 export function resetQuotaCheck(): void {
   quotaExceededState = false;
   try {
+    localStorage.removeItem(QUOTA_STORAGE_KEY);
     sessionStorage.removeItem("cbt_firestore_quota_exceeded");
   } catch {}
+  console.info("[Firestore] Status pengecekan kuota di-reset.");
   quotaListeners.forEach((fn) => fn(false));
 }
 
@@ -91,7 +109,7 @@ export async function syncExamToFirestore(
     const cleanExam = sanitizeForFirestore(exam);
     const cleanTokens = tokens ? sanitizeForFirestore(tokens) : [];
 
-    // 1. Simpan ke koleksi /exams/{examId} jika kuota masih tersedia
+    // 1. Simpan ke koleksi /exams/{examId} HANYA jika kuota masih tersedia
     if (!isQuotaExceeded()) {
       const examDocRef = doc(db, "exams", exam.id);
       await setDoc(examDocRef, {
@@ -116,9 +134,10 @@ export async function syncExamToFirestore(
       firestoreSuccess = true;
     }
   } catch (err: any) {
-    console.warn("[Firestore] Gagal menyimpan naskah ke Firestore:", err);
-    if (err?.code === "resource-exhausted" || (err?.message && err.message.toLowerCase().includes("quota"))) {
-      markQuotaExceeded("Firestore quota exceeded");
+    if (err?.code === "resource-exhausted" || (err?.message && (err.message.toLowerCase().includes("quota") || err.message.toLowerCase().includes("resource-exhausted")))) {
+      markQuotaExceeded("Firestore write quota exceeded on exam sync");
+    } else {
+      console.warn("[Firestore] Gagal menyimpan naskah ke Firestore:", err);
     }
   }
 
@@ -214,8 +233,6 @@ export async function fetchExamFromFirestore(
   try {
     const gasRes = await fetchExamFromGAS(cleanKey);
     if (gasRes?.success && gasRes.exam) {
-      // Auto-cache ke Firestore untuk request berikutnya
-      syncExamToFirestore(gasRes.exam, gasRes.tokens).catch(() => {});
       return {
         exam: gasRes.exam,
         token: gasRes.token,
@@ -263,9 +280,10 @@ export async function syncStudentSessionToFirestore(
       }, { merge: true });
       firestoreOk = true;
     } catch (err: any) {
-      console.warn("[Firestore] Gagal menyimpan sesi ke Firestore:", err);
-      if (err?.code === "resource-exhausted" || (err?.message && err.message.toLowerCase().includes("quota"))) {
-        markQuotaExceeded("Firestore write quota exceeded");
+      if (err?.code === "resource-exhausted" || (err?.message && (err.message.toLowerCase().includes("quota") || err.message.toLowerCase().includes("resource-exhausted")))) {
+        markQuotaExceeded("Firestore write quota exceeded on student session");
+      } else {
+        console.warn("[Firestore] Gagal menyimpan sesi ke Firestore:", err);
       }
     }
   }
@@ -524,12 +542,18 @@ export async function deleteStudentSessionFromFirestore(
   _nisn?: string
 ): Promise<boolean> {
   let ok = false;
-  try {
-    const docRef = doc(db, "sessions", sessionId);
-    await deleteDoc(docRef);
-    ok = true;
-  } catch (e) {
-    console.warn("[Firestore] Gagal menghapus sesi doc:", e);
+  if (!isQuotaExceeded()) {
+    try {
+      const docRef = doc(db, "sessions", sessionId);
+      await deleteDoc(docRef);
+      ok = true;
+    } catch (e: any) {
+      if (e?.code === "resource-exhausted" || (e?.message && (e.message.toLowerCase().includes("quota") || e.message.toLowerCase().includes("resource-exhausted")))) {
+        markQuotaExceeded("Firestore delete quota exceeded");
+      } else {
+        console.warn("[Firestore] Gagal menghapus sesi doc:", e);
+      }
+    }
   }
 
   const actualExamCode = examCode || (studentNameOrExamCode && studentNameOrExamCode.length <= 10 ? studentNameOrExamCode : undefined);
@@ -556,15 +580,21 @@ export async function batchDeleteStudentSessionsFromFirestore(
   options: BatchDeleteOptions
 ): Promise<boolean> {
   let ok = false;
-  try {
-    const batch = writeBatch(db);
-    options.sessionIds.forEach((id) => {
-      batch.delete(doc(db, "sessions", id));
-    });
-    await batch.commit();
-    ok = true;
-  } catch (e) {
-    console.warn("[Firestore] Batch delete error:", e);
+  if (!isQuotaExceeded()) {
+    try {
+      const batch = writeBatch(db);
+      options.sessionIds.forEach((id) => {
+        batch.delete(doc(db, "sessions", id));
+      });
+      await batch.commit();
+      ok = true;
+    } catch (e: any) {
+      if (e?.code === "resource-exhausted" || (e?.message && (e.message.toLowerCase().includes("quota") || e.message.toLowerCase().includes("resource-exhausted")))) {
+        markQuotaExceeded("Firestore batch delete quota exceeded");
+      } else {
+        console.warn("[Firestore] Batch delete error:", e);
+      }
+    }
   }
 
   try {

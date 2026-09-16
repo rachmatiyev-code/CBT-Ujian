@@ -1571,7 +1571,19 @@ app.get("/api/gas-code", (req, res) => {
   try {
     const filePath = path.join(process.cwd(), "google-apps-script", "Code.gs");
     if (fs.existsSync(filePath)) {
-      const code = fs.readFileSync(filePath, "utf-8");
+      let code = fs.readFileSync(filePath, "utf-8");
+      const spreadsheetId = req.query.spreadsheetId as string;
+      if (spreadsheetId && typeof spreadsheetId === "string" && spreadsheetId.trim()) {
+        const cleanId = spreadsheetId.trim();
+        code = code.replace(
+          /var SPREADSHEET_ID = "[^"]*";/,
+          `var SPREADSHEET_ID = "${cleanId}";`
+        );
+        code = code.replace(
+          /var SPREADSHEET_ANALISIS_ID = "[^"]*";/,
+          `var SPREADSHEET_ANALISIS_ID = "${cleanId}";`
+        );
+      }
       return res.json({ success: true, code });
     }
     return res.status(404).json({ success: false, error: "File Code.gs tidak ditemukan." });

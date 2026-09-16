@@ -668,9 +668,11 @@ export async function saveStudentRosterToGAS(
 /**
  * Mendapatkan kode backend Google Apps Script (Code.gs)
  */
-export async function getGasBackendCode(): Promise<string> {
+export async function getGasBackendCode(spreadsheetId?: string): Promise<string> {
+  const targetId = spreadsheetId || "1jgREm74oAftju7CWA0mv4fBq0Cz-sar3E7GvbgljUJg";
   try {
-    const res = await fetch("/api/gas-code");
+    const query = targetId ? `?spreadsheetId=${encodeURIComponent(targetId)}` : "";
+    const res = await fetch(`/api/gas-code${query}`);
     if (res.ok) {
       const data = await res.json();
       if (data && data.code) {
@@ -695,6 +697,7 @@ export async function getGasBackendCode(): Promise<string> {
  * Panduan: Deploy sebagai Web App -> Execute as: Me -> Who has access: Anyone
  */
 
+var SPREADSHEET_ID = "${targetId}";
 var MASTER_FOLDER_NAME = "CBT SlideExam Database";
 var SUBFOLDER_SISWA = "Data Siswa dan Kelas";
 var SUBFOLDER_ANALISIS = "Data Analisis dan Nilai";
@@ -705,7 +708,14 @@ function doGet(e) {
   var result = { success: false, action: action };
   try {
     if (action === "ping") {
-      result = { success: true, status: "ready", message: "Google Apps Script CBT Backend Aktif" };
+      var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+      result = {
+        success: true,
+        status: "ready",
+        message: "Google Apps Script CBT Backend Aktif",
+        spreadsheetId: ss.getId(),
+        spreadsheetUrl: ss.getUrl()
+      };
     }
     return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
@@ -714,12 +724,55 @@ function doGet(e) {
 }
 
 function doPost(e) {
-  var postData = {};
+  var data = {};
   try {
-    postData = JSON.parse(e.postData.contents || "{}");
+    data = JSON.parse(e.postData.contents || "{}");
   } catch (err) {
-    postData = e.parameter || {};
+    data = e.parameter || {};
   }
-  return ContentService.createTextOutput(JSON.stringify({ success: true, action: postData.action })).setMimeType(ContentService.MimeType.JSON);
+
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    if (data.targetSheet) {
+      var targetSheetName = String(data.targetSheet).trim();
+      var sheet = ss.getSheetByName(targetSheetName);
+
+      // Error handling jika sheet tujuan tidak ditemukan
+      if (!sheet) {
+        var available = ss.getSheets().map(function(s) { return s.getName(); });
+        return ContentService.createTextOutput(JSON.stringify({
+          success: false,
+          error: "Sheet '" + targetSheetName + "' tidak ditemukan di spreadsheet.",
+          missingSheet: targetSheetName,
+          availableSheets: available
+        })).setMimeType(ContentService.MimeType.JSON);
+      }
+
+      // Tulis baris data
+      if (data.rowValues && Array.isArray(data.rowValues)) {
+        sheet.appendRow(data.rowValues);
+      } else if (data.row && Array.isArray(data.row)) {
+        sheet.appendRow(data.row);
+      }
+
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        message: "Data berhasil ditulis ke sheet '" + targetSheetName + "'",
+        targetSheet: targetSheetName,
+        spreadsheetUrl: ss.getUrl()
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      action: data.action,
+      spreadsheetId: ss.getId()
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
 }`;
 }

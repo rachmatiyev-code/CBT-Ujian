@@ -17,6 +17,10 @@ export async function testFirestoreConnection(): Promise<boolean> {
     await getDocFromServer(doc(db, "test", "connection"));
     return true;
   } catch (error: any) {
+    if (error?.code === "resource-exhausted" || (error?.message && (error.message.toLowerCase().includes("quota") || error.message.toLowerCase().includes("resource-exhausted")))) {
+      // Free quota exceeded on Firestore
+      return false;
+    }
     if (error instanceof Error && error.message.includes("the client is offline")) {
       console.warn("Firestore: client is offline or network restricted.");
     }
