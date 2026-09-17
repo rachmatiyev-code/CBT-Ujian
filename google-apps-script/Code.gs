@@ -157,52 +157,77 @@ function doGet(e) {
 
 /**
  * Handle HTTP POST Requests
- * Membaca incoming JSON dari body request dan merutekan data ke sheet tujuan menggunakan data.targetSheet
+ * -------------------------------------------------------------------------
+ * Menerima payload JSON, mem-parse data, membuka spreadsheet menggunakan SPREADSHEET_ID,
+ * mengidentifikasi targetSheet (misal: 'Hasil_Ujian', 'MasterData', 'Pengayaan_Dan_Remidi_AI', 'Analisis_Butir_Soal'),
+ * dan menggunakan appendRow() untuk menyimpan rowValues dengan penanganan galat terperinci.
  */
 function doPost(e) {
   var result = { success: false };
 
   try {
     // 1. Parsing incoming JSON dari request body
-    var data = {};
+    var data = null;
     if (e && e.postData && e.postData.contents) {
       try {
         data = JSON.parse(e.postData.contents);
       } catch (errJson) {
-        data = e.parameter || {};
+        return createJsonResponse({
+          success: false,
+          error: "Format JSON tidak valid: " + errJson.toString(),
+          rawContent: e.postData.contents ? e.postData.contents.substring(0, 300) : null
+        });
       }
-    } else if (e && e.parameter) {
+    } else if (e && e.parameter && Object.keys(e.parameter).length > 0) {
       data = e.parameter;
-    }
-
-    var payload = data; // alias untuk kompatibilitas ganda (data & payload)
-
-    // 2. Hubungkan ke Spreadsheet menggunakan SpreadsheetApp.openById(SPREADSHEET_ID)
-    var targetSpreadsheetId = (data.spreadsheetId && String(data.spreadsheetId).trim()) || SPREADSHEET_ID;
-    var ss = null;
-
-    try {
-      ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-      // Jika user menyediakan custom spreadsheetId yang berbeda, gunakan custom ID jika valid
-      if (data.spreadsheetId && String(data.spreadsheetId).trim() !== SPREADSHEET_ID) {
-        try {
-          var customSs = SpreadsheetApp.openById(String(data.spreadsheetId).trim());
-          if (customSs) ss = customSs;
-        } catch (eCustom) {
-          console.warn("Custom spreadsheetId gagal dibuka, menggunakan default SPREADSHEET_ID:", eCustom);
-        }
-      }
-    } catch (eOpen) {
+    } else {
       return createJsonResponse({
         success: false,
-        error: "Gagal membuka Spreadsheet dengan ID '" + SPREADSHEET_ID + "': " + eOpen.toString(),
-        spreadsheetId: SPREADSHEET_ID
+        error: "Permintaan POST kosong: Tidak ada data JSON (postData.contents) atau parameter yang diterima."
       });
     }
 
-    // 3. Routing Berdasarkan data.targetSheet (misal: 'Hasil_Ujian', 'MasterData', dll.)
+    if (!data || typeof data !== "object") {
+      return createJsonResponse({
+        success: false,
+        error: "Payload JSON tidak valid atau bukan berupa objek."
+      });
+    }
+
+    var payload = data; // alias untuk kompatibilitas ganda
+
+    // 2. Hubungkan ke target Google Spreadsheet menggunakan SpreadsheetApp.openById(SPREADSHEET_ID)
+    var targetSpreadsheetId = (data.spreadsheetId && String(data.spreadsheetId).trim()) || SPREADSHEET_ID;
+    if (!targetSpreadsheetId) {
+      return createJsonResponse({
+        success: false,
+        error: "SPREADSHEET_ID belum dikonfigurasi. Harap isi variabel SPREADSHEET_ID di bagian atas Code.gs."
+      });
+    }
+
+    var ss = null;
+    try {
+      ss = SpreadsheetApp.openById(targetSpreadsheetId);
+    } catch (eOpen) {
+      return createJsonResponse({
+        success: false,
+        error: "Gagal membuka Spreadsheet dengan ID '" + targetSpreadsheetId + "': " + eOpen.toString(),
+        spreadsheetId: targetSpreadsheetId,
+        hint: "Pastikan ID spreadsheet benar dan akun Google yang mendeploy Web App memiliki akses Editor ke Spreadsheet tersebut."
+      });
+    }
+
+    // 3. Routing Berdasarkan data.targetSheet
+    // Mendukung sheet utama: 'Hasil_Ujian', 'MasterData', 'Pengayaan_Dan_Remidi_AI', 'Analisis_Butir_Soal', dll.
     if (data.targetSheet) {
       var targetSheetName = String(data.targetSheet).trim();
+      if (!targetSheetName) {
+        return createJsonResponse({
+          success: false,
+          error: "Parameter 'targetSheet' tidak boleh kosong."
+        });
+      }
+
       var sheet = ss.getSheetByName(targetSheetName);
 
       // Pencarian fleksibel case-insensitive jika nama sheet tidak cocok persis (misal: 'hasil_ujian' -> 'Hasil_Ujian')
@@ -242,43 +267,87 @@ function doPost(e) {
           var availableSheetsList = ss.getSheets().map(function(s) { return s.getName(); });
           return createJsonResponse({
             success: false,
-            error: "Sheet '" + targetSheetName + "' tidak ditemukan di dalam Spreadsheet.",
+            error: "Sheet tujuan '" + targetSheetName + "' tidak ditemukan di dalam Spreadsheet.",
             missingSheet: targetSheetName,
             availableSheets: availableSheetsList,
             spreadsheetId: ss.getId(),
-            spreadsheetUrl: ss.getUrl()
+            spreadsheetUrl: ss.getUrl(),
+            hint: "Buat sheet bernama '" + targetSheetName + "' di Spreadsheet atau kirim parameter { createIfMissing: true }."
           });
         }
       }
 
-      // Rutekan dan simpan data ke sheet tujuan yang telah ditemukan/dibuat
+      // 4. Menggunakan appendRow() untuk menyimpan rowValues
       var rowsWritten = 0;
       var cleanTargetUpper = targetSheetName.toUpperCase().replace(/[\s_-]+/g, "");
 
       // A. Jika payload memiliki rowValues (array satu baris)
-      if (data.rowValues && Array.isArray(data.rowValues)) {
-        sheet.appendRow(data.rowValues);
-        rowsWritten = 1;
+      if (data.rowValues !== undefined) {
+        if (!Array.isArray(data.rowValues)) {
+          return createJsonResponse({
+            success: false,
+            error: "Parameter 'rowValues' harus berupa Array nilai kolom (contoh: ['nilai1', 'nilai2', ...]).",
+            targetSheet: targetSheetName,
+            receivedType: typeof data.rowValues
+          });
+        }
+        try {
+          sheet.appendRow(data.rowValues);
+          rowsWritten = 1;
+        } catch (eAppend) {
+          return createJsonResponse({
+            success: false,
+            error: "Gagal mengeksekusi appendRow() pada sheet '" + targetSheetName + "': " + eAppend.toString(),
+            targetSheet: targetSheetName,
+            spreadsheetId: ss.getId()
+          });
+        }
       } else if (data.row && Array.isArray(data.row)) {
-        sheet.appendRow(data.row);
-        rowsWritten = 1;
+        try {
+          sheet.appendRow(data.row);
+          rowsWritten = 1;
+        } catch (eAppend) {
+          return createJsonResponse({
+            success: false,
+            error: "Gagal mengeksekusi appendRow() pada sheet '" + targetSheetName + "': " + eAppend.toString(),
+            targetSheet: targetSheetName,
+            spreadsheetId: ss.getId()
+          });
+        }
       } else if (data.values && Array.isArray(data.values) && (!data.values[0] || !Array.isArray(data.values[0]))) {
-        sheet.appendRow(data.values);
-        rowsWritten = 1;
+        try {
+          sheet.appendRow(data.values);
+          rowsWritten = 1;
+        } catch (eAppend) {
+          return createJsonResponse({
+            success: false,
+            error: "Gagal mengeksekusi appendRow() pada sheet '" + targetSheetName + "': " + eAppend.toString(),
+            targetSheet: targetSheetName,
+            spreadsheetId: ss.getId()
+          });
+        }
       }
-      // B. Jika payload memiliki rows / data (array multi-baris)
+      // B. Multi-baris (data.rows atau data.data)
       else if (data.rows && Array.isArray(data.rows) && data.rows.length > 0) {
         for (var r = 0; r < data.rows.length; r++) {
           if (Array.isArray(data.rows[r])) {
-            sheet.appendRow(data.rows[r]);
-            rowsWritten++;
+            try {
+              sheet.appendRow(data.rows[r]);
+              rowsWritten++;
+            } catch (eAppendRow) {
+              console.warn("Gagal appendRow baris ke-" + r + ":", eAppendRow);
+            }
           }
         }
       } else if (data.data && Array.isArray(data.data) && data.data.length > 0 && Array.isArray(data.data[0])) {
         for (var d = 0; d < data.data.length; d++) {
           if (Array.isArray(data.data[d])) {
-            sheet.appendRow(data.data[d]);
-            rowsWritten++;
+            try {
+              sheet.appendRow(data.data[d]);
+              rowsWritten++;
+            } catch (eAppendRow) {
+              console.warn("Gagal appendRow data ke-" + d + ":", eAppendRow);
+            }
           }
         }
       }
@@ -325,6 +394,13 @@ function doPost(e) {
         }
         sheet.appendRow(mappedRow);
         rowsWritten = 1;
+      } else {
+        return createJsonResponse({
+          success: false,
+          error: "Payload untuk targetSheet '" + targetSheetName + "' harus menyertakan 'rowValues' (Array nilai kolom).",
+          targetSheet: targetSheetName,
+          hint: "Contoh format JSON: { targetSheet: '" + targetSheetName + "', rowValues: ['Data1', 'Data2', 100] }"
+        });
       }
 
       // Catat log audit ke MasterData jika tujuan bukan MasterData
@@ -339,10 +415,11 @@ function doPost(e) {
 
       return createJsonResponse({
         success: true,
-        message: "Data berhasil dirutekan dan ditulis ke sheet '" + targetSheetName + "'",
+        message: "Data berhasil disimpan ke sheet '" + targetSheetName + "' via appendRow()",
         targetSheet: targetSheetName,
         rowsWritten: rowsWritten,
         lastRow: sheet.getLastRow(),
+        spreadsheetId: ss.getId(),
         spreadsheetUrl: ss.getUrl()
       });
     }
