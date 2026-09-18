@@ -1,32 +1,13 @@
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore, doc, getDocFromServer, Firestore } from "firebase/firestore";
-import firebaseConfig from "../../firebase-applet-config.json";
+/**
+ * Firebase Client Adapter
+ * Firebase has been replaced in favor of CBT Express Server and Google Apps Script.
+ * This stub avoids build breaks while ensuring zero runtime Firebase traffic.
+ */
 
-export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const app = null;
+export const databaseId = "(default)";
+export const db = null as any;
 
-export const databaseId = (firebaseConfig as any).firestoreDatabaseId || "(default)";
-
-export const db: Firestore =
-  databaseId && databaseId !== "(default)"
-    ? getFirestore(app, databaseId)
-    : getFirestore(app);
-
-// Connection test on boot
 export async function testFirestoreConnection(): Promise<boolean> {
-  try {
-    await getDocFromServer(doc(db, "test", "connection"));
-    return true;
-  } catch (error: any) {
-    if (error?.code === "resource-exhausted" || (error?.message && (error.message.toLowerCase().includes("quota") || error.message.toLowerCase().includes("resource-exhausted")))) {
-      // Free quota exceeded on Firestore
-      return false;
-    }
-    if (error instanceof Error && error.message.includes("the client is offline")) {
-      console.warn("Firestore: client is offline or network restricted.");
-    }
-    // Document might just not exist, which is fine and means connection succeeded
-    return true;
-  }
+  return true;
 }
-
-testFirestoreConnection();

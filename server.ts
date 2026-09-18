@@ -896,6 +896,40 @@ app.get("/api/sessions/by-exam/:codeOrId", (req, res) => {
   res.json({ success: true, sessions: matched });
 });
 
+// Live Monitoring endpoint for Long Polling
+app.get("/api/monitoring", (req, res) => {
+  const targetCode = String(req.query.examCode || "").trim().toUpperCase();
+  const students: any[] = [];
+  studentSessionsRegistry.forEach((session) => {
+    const sCode = (session.examCode || "").trim().toUpperCase();
+    const sId = (session.examId || "").trim().toUpperCase();
+    if (!targetCode || sCode === targetCode || sId === targetCode) {
+      students.push({
+        timestamp: session.updatedAt || session.lastActiveAt || session.startTime || new Date().toISOString(),
+        sessionId: session.id,
+        examCode: session.examCode,
+        examTitle: session.examTitle,
+        studentId: session.nisn,
+        nisn: session.nisn,
+        name: session.studentName,
+        studentName: session.studentName,
+        class: session.className,
+        className: session.className,
+        score: session.totalScoreEarned || 0,
+        maxScore: session.maxScore || 100,
+        percentage: session.percentage || 0,
+        passed: Boolean(session.passed),
+        timeSpentMinutes: Math.round((session.timeSpentSeconds || 0) / 60),
+        timeSpentSeconds: session.timeSpentSeconds || 0,
+        status: session.status === "submitted" ? "Selesai" : (session.status === "in_progress" ? "Sedang Mengerjakan" : "Belum Mulai"),
+        submitTime: session.submitTime,
+        answers: session.answers,
+      });
+    }
+  });
+  res.json({ success: true, count: students.length, students });
+});
+
 // Delete or reset student session
 app.delete("/api/sessions/:sessionId", (req, res) => {
   const id = decodeURIComponent(req.params.sessionId || "").trim();

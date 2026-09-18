@@ -410,7 +410,8 @@ export async function syncStudentSessionToGAS(
   }
 
   // 2. Simpan ke Google Sheets (Data Analisis dan Nilai) via Google Apps Script
-  if (cachedGasConfig.connected && cachedGasConfig.webAppUrl) {
+  const webAppUrl = cachedGasConfig.webAppUrl && cachedGasConfig.webAppUrl.trim();
+  if (webAppUrl) {
     try {
       const gasResult = await callGasEndpoint("saveSession", {
         session,
@@ -442,7 +443,8 @@ export async function saveAiPengayaanRemidiToGAS(
   session: StudentExamSession,
   aiAnalysis: AiDiagnosticResult | string
 ): Promise<{ success: boolean; sheetUrl?: string; message: string }> {
-  if (cachedGasConfig.connected && cachedGasConfig.webAppUrl) {
+  const webAppUrl = cachedGasConfig.webAppUrl && cachedGasConfig.webAppUrl.trim();
+  if (webAppUrl) {
     try {
       const res = await callGasEndpoint("saveAiAnalysis", { session, aiAnalysis });
       if (res && res.success) {

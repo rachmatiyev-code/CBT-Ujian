@@ -124,6 +124,63 @@ function doGet(e) {
         result = listAllExams();
         break;
 
+      case "getMonitoring":
+        var targetExamCode = (e.parameter.examCode || "").trim().toUpperCase();
+        var ssMonitoring = null;
+        try {
+          ssMonitoring = getSpreadsheetByType("analisis");
+        } catch (eMon) {
+          if (SPREADSHEET_ID) {
+            ssMonitoring = SpreadsheetApp.openById(SPREADSHEET_ID);
+          }
+        }
+
+        var sheetHasil = ssMonitoring ? ssMonitoring.getSheetByName("Hasil_Ujian") : null;
+        if (!sheetHasil) {
+          result = { success: true, count: 0, students: [] };
+          break;
+        }
+
+        var dataMonitoring = sheetHasil.getDataRange().getValues();
+        var monitoringStudents = [];
+
+        // Abaikan baris header (indeks 0)
+        for (var mi = 1; mi < dataMonitoring.length; mi++) {
+          var rowExamCode = String(dataMonitoring[mi][2] || "").trim().toUpperCase();
+          if (!targetExamCode || !rowExamCode || rowExamCode === targetExamCode) {
+            monitoringStudents.push({
+              timestamp: dataMonitoring[mi][0],
+              sessionId: dataMonitoring[mi][1],
+              examCode: dataMonitoring[mi][2],
+              examTitle: dataMonitoring[mi][3],
+              subject: dataMonitoring[mi][4],
+              studentId: dataMonitoring[mi][5],
+              nisn: dataMonitoring[mi][5],
+              name: dataMonitoring[mi][6],
+              studentName: dataMonitoring[mi][6],
+              class: dataMonitoring[mi][7],
+              className: dataMonitoring[mi][7],
+              score: dataMonitoring[mi][8],
+              maxScore: dataMonitoring[mi][9] || 100,
+              percentage: dataMonitoring[mi][10] || dataMonitoring[mi][8] || 0,
+              passed: String(dataMonitoring[mi][11] || "").indexOf("TUNTAS") !== -1,
+              timeSpentMinutes: dataMonitoring[mi][12],
+              timeSpentSeconds: (Number(dataMonitoring[mi][12]) || 0) * 60,
+              correctCount: dataMonitoring[mi][13],
+              wrongCount: dataMonitoring[mi][14],
+              status: dataMonitoring[mi][15] || "Belum Mulai",
+              submitTime: dataMonitoring[mi][16] || dataMonitoring[mi][0]
+            });
+          }
+        }
+
+        result = {
+          success: true,
+          count: monitoringStudents.length,
+          students: monitoringStudents
+        };
+        break;
+
       case "getSessions":
         var examCode = e.parameter.examCode || "";
         result = getStudentSessions(examCode);
@@ -198,22 +255,35 @@ function doPost(e) {
 
     // 2. Hubungkan ke target Google Spreadsheet menggunakan SpreadsheetApp.openById(SPREADSHEET_ID)
     var targetSpreadsheetId = (data.spreadsheetId && String(data.spreadsheetId).trim()) || SPREADSHEET_ID;
-    if (!targetSpreadsheetId) {
-      return createJsonResponse({
-        success: false,
-        error: "SPREADSHEET_ID belum dikonfigurasi. Harap isi variabel SPREADSHEET_ID di bagian atas Code.gs."
-      });
+    var ss = null;
+
+    if (targetSpreadsheetId) {
+      try {
+        ss = SpreadsheetApp.openById(targetSpreadsheetId);
+      } catch (eOpen) {
+        if (data.targetSheet) {
+          return createJsonResponse({
+            success: false,
+            error: "Gagal membuka Spreadsheet dengan ID '" + targetSpreadsheetId + "': " + eOpen.toString(),
+            spreadsheetId: targetSpreadsheetId,
+            hint: "Pastikan ID spreadsheet benar dan akun Google yang mendeploy Web App memiliki akses Editor ke Spreadsheet tersebut."
+          });
+        }
+      }
     }
 
-    var ss = null;
-    try {
-      ss = SpreadsheetApp.openById(targetSpreadsheetId);
-    } catch (eOpen) {
+    // Fallback otomatis jika SPREADSHEET_ID belum diisi atau gagal
+    if (!ss) {
+      try {
+        ss = getSpreadsheetByType("analisis");
+      } catch (eFallback) {}
+    }
+
+    if (!ss && data.targetSheet) {
       return createJsonResponse({
         success: false,
-        error: "Gagal membuka Spreadsheet dengan ID '" + targetSpreadsheetId + "': " + eOpen.toString(),
-        spreadsheetId: targetSpreadsheetId,
-        hint: "Pastikan ID spreadsheet benar dan akun Google yang mendeploy Web App memiliki akses Editor ke Spreadsheet tersebut."
+        error: "SPREADSHEET_ID belum dikonfigurasi dan spreadsheet Google Drive tidak ditemukan. Harap isi variabel SPREADSHEET_ID di bagian atas Code.gs.",
+        hint: "Isi SPREADSHEET_ID di bagian atas Code.gs atau kirim parameter { spreadsheetId: '...' }."
       });
     }
 
@@ -465,7 +535,7 @@ function doPost(e) {
         break;
 
       case "batchDeleteSessions":
-        result = batchDeleteStudentSessions(data.sessionIds, data.examCode, targetSpreadsheetId);
+        result = batchDeleteStudentSessions(data.sessionIds, data.examCode, data.studentNames, targetSpreadsheetId);
         break;
 
       case "backupApp":
@@ -1828,22 +1898,139 @@ function getStudentSessions(examCode) {
 /**
  * Hapus atau reset sesi siswa
  */
-function deleteStudentSession(sessionId, examCode, studentName) {
-  var folders = getSystemFolders();
-  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS);
+function deleteStudentSession(sessionId, examCode, studentName, customSpreadsheetId) {
+  var ssAnalisis = null;
+  try {
+    ssAnalisis = getSpreadsheetByType("analisis", customSpreadsheetId);
+  } catch (e) {
+    if (SPREADSHEET_ID) {
+      try { ssAnalisis = SpreadsheetApp.openById(SPREADSHEET_ID); } catch (e2) {}
+    }
+  }
+
+  if (!ssAnalisis) {
+    return { success: false, message: "Spreadsheet analisis tidak ditemukan" };
+  }
+
   var sheetHasil = ssAnalisis.getSheetByName("Hasil_Ujian");
   var sheetAI = ssAnalisis.getSheetByName("Pengayaan_Dan_Remidi_AI");
+  var sheetButir = ssAnalisis.getSheetByName("Analisis_Butir_Soal");
 
   var deleted = 0;
   var targetId = String(sessionId || "").trim();
+  var targetName = String(studentName || "").trim().toLowerCase();
+  var targetCode = String(examCode || "").trim().toUpperCase();
 
+  // 1. Hapus dari sheet Hasil_Ujian
   if (sheetHasil && sheetHasil.getLastRow() > 1) {
     var data = sheetHasil.getDataRange().getValues();
     for (var i = data.length - 1; i >= 1; i--) {
-      if (String(data[i][1]).trim() === targetId) {
+      var rowSessId = String(data[i][1]).trim();
+      var rowExamCode = String(data[i][2]).trim().toUpperCase();
+      var rowName = String(data[i][6]).trim().toLowerCase();
+
+      var matchId = targetId && rowSessId === targetId;
+      var matchNameAndExam = targetName && rowName === targetName && (!targetCode || rowExamCode === targetCode);
+
+      if (matchId || matchNameAndExam) {
         sheetHasil.deleteRow(i + 1);
         deleted++;
-        break;
+      }
+    }
+  }
+
+  // 2. Hapus dari sheet Pengayaan_Dan_Remidi_AI
+  if (sheetAI && sheetAI.getLastRow() > 1) {
+    var aiData = sheetAI.getDataRange().getValues();
+    for (var j = aiData.length - 1; j >= 1; j--) {
+      var aiSessId = String(aiData[j][1]).trim();
+      var aiName = String(aiData[j][4]).trim().toLowerCase();
+      var aiExamCode = String(aiData[j][2]).trim().toUpperCase();
+
+      var matchAiId = targetId && aiSessId === targetId;
+      var matchAiName = targetName && aiName === targetName && (!targetCode || aiExamCode === targetCode);
+
+      if (matchAiId || matchAiName) {
+        sheetAI.deleteRow(j + 1);
+      }
+    }
+  }
+
+  // 3. Reset status siswa di sheet Roster_Siswa (dari 'selesai' ke 'belum_mulai')
+  try {
+    var ssSiswa = null;
+    try {
+      ssSiswa = getSpreadsheetByType("siswa", customSpreadsheetId);
+    } catch (eS) {
+      if (SPREADSHEET_ID) ssSiswa = SpreadsheetApp.openById(SPREADSHEET_ID);
+    }
+    if (ssSiswa) {
+      var sheetRoster = ssSiswa.getSheetByName("Roster_Siswa");
+      if (sheetRoster && sheetRoster.getLastRow() > 1) {
+        var rData = sheetRoster.getDataRange().getValues();
+        for (var r = 1; r < rData.length; r++) {
+          var rName = String(rData[r][3]).trim().toLowerCase();
+          var rExamCode = String(rData[r][7]).trim().toUpperCase();
+          var matchRoster = targetName && rName === targetName && (!targetCode || rExamCode === targetCode);
+          if (matchRoster) {
+            sheetRoster.getRange(r + 1, 7).setValue("belum_mulai");
+            sheetRoster.getRange(r + 1, 10).setValue("");
+          }
+        }
+      }
+    }
+  } catch (errRoster) {
+    console.warn("Gagal reset status di Roster_Siswa:", errRoster);
+  }
+
+  return {
+    success: true,
+    deleted: deleted,
+    message: "Sesi " + (targetName || targetId) + " berhasil dihapus dan direset dari Google Sheets."
+  };
+}
+
+/**
+ * Batch delete sesi siswa
+ */
+function batchDeleteStudentSessions(sessionIds, examCode, studentNames, customSpreadsheetId) {
+  var idSet = {};
+  (sessionIds || []).forEach(function(id) { if (id) idSet[String(id).trim()] = true; });
+
+  var nameSet = {};
+  (studentNames || []).forEach(function(n) { if (n) nameSet[String(n).trim().toLowerCase()] = true; });
+
+  var ssAnalisis = null;
+  try {
+    ssAnalisis = getSpreadsheetByType("analisis", customSpreadsheetId);
+  } catch (e) {
+    if (SPREADSHEET_ID) {
+      try { ssAnalisis = SpreadsheetApp.openById(SPREADSHEET_ID); } catch (e2) {}
+    }
+  }
+
+  if (!ssAnalisis) {
+    return { success: false, message: "Spreadsheet analisis tidak ditemukan" };
+  }
+
+  var sheetHasil = ssAnalisis.getSheetByName("Hasil_Ujian");
+  var sheetAI = ssAnalisis.getSheetByName("Pengayaan_Dan_Remidi_AI");
+  var targetCode = examCode ? String(examCode).trim().toUpperCase() : "";
+
+  var deletedCount = 0;
+  if (sheetHasil && sheetHasil.getLastRow() > 1) {
+    var data = sheetHasil.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      var sId = String(data[i][1]).trim();
+      var sName = String(data[i][6]).trim().toLowerCase();
+      var sExamCode = String(data[i][2]).trim().toUpperCase();
+
+      var matchId = idSet[sId];
+      var matchName = nameSet[sName] && (!targetCode || sExamCode === targetCode);
+
+      if (matchId || matchName) {
+        sheetHasil.deleteRow(i + 1);
+        deletedCount++;
       }
     }
   }
@@ -1851,38 +2038,39 @@ function deleteStudentSession(sessionId, examCode, studentName) {
   if (sheetAI && sheetAI.getLastRow() > 1) {
     var aiData = sheetAI.getDataRange().getValues();
     for (var j = aiData.length - 1; j >= 1; j--) {
-      if (String(aiData[j][1]).trim() === targetId) {
+      var aiId = String(aiData[j][1]).trim();
+      var aiName = String(aiData[j][4]).trim().toLowerCase();
+      var aiExam = String(aiData[j][2]).trim().toUpperCase();
+
+      if (idSet[aiId] || (nameSet[aiName] && (!targetCode || aiExam === targetCode))) {
         sheetAI.deleteRow(j + 1);
-        break;
       }
     }
   }
 
-  return { success: true, deleted: deleted, message: "Sesi " + targetId + " berhasil dihapus dari Google Sheets." };
-}
-
-/**
- * Batch delete sesi siswa
- */
-function batchDeleteStudentSessions(sessionIds, examCode) {
-  var idSet = {};
-  (sessionIds || []).forEach(function(id) { idSet[String(id).trim()] = true; });
-
-  var folders = getSystemFolders();
-  var ssAnalisis = getOrCreateSpreadsheet(folders.analisis, SHEET_NAME_ANALISIS);
-  var sheetHasil = ssAnalisis.getSheetByName("Hasil_Ujian");
-
-  var deletedCount = 0;
-  if (sheetHasil && sheetHasil.getLastRow() > 1) {
-    var data = sheetHasil.getDataRange().getValues();
-    for (var i = data.length - 1; i >= 1; i--) {
-      var sId = String(data[i][1]).trim();
-      if (idSet[sId]) {
-        sheetHasil.deleteRow(i + 1);
-        deletedCount++;
+  // Reset status siswa di Roster_Siswa
+  try {
+    var ssSiswa = null;
+    try {
+      ssSiswa = getSpreadsheetByType("siswa", customSpreadsheetId);
+    } catch (eS) {
+      if (SPREADSHEET_ID) ssSiswa = SpreadsheetApp.openById(SPREADSHEET_ID);
+    }
+    if (ssSiswa) {
+      var sheetRoster = ssSiswa.getSheetByName("Roster_Siswa");
+      if (sheetRoster && sheetRoster.getLastRow() > 1) {
+        var rData = sheetRoster.getDataRange().getValues();
+        for (var r = 1; r < rData.length; r++) {
+          var rName = String(rData[r][3]).trim().toLowerCase();
+          var rExam = String(rData[r][7]).trim().toUpperCase();
+          if (nameSet[rName] && (!targetCode || rExam === targetCode)) {
+            sheetRoster.getRange(r + 1, 7).setValue("belum_mulai");
+            sheetRoster.getRange(r + 1, 10).setValue("");
+          }
+        }
       }
     }
-  }
+  } catch (errRoster) {}
 
   return { success: true, deletedCount: deletedCount };
 }

@@ -34,7 +34,15 @@ import { ExamPackage, SchoolProfile, StudentExamSession, StudentTokenItem } from
 import { exportGradebookToExcel, exportItemAnalysisToExcel } from "../utils/sheetExport";
 import { generateStudentExamPdfReport, generateBatchStudentsPdfReport } from "../utils/studentPdfReport";
 import { deduplicateStudentTokens } from "../utils/tokenValidator";
-import { fetchExamSessions, reconcileAndMergeExamSessions, subscribeToExamSessions } from "../utils/firestoreService";
+import {
+  fetchLiveMonitoringData,
+  resetStudentSession as resetMonitoringSession,
+  deleteStudentPermanently,
+  batchDeleteStudentSessions as batchDeleteMonitoringSessions,
+  isSessionResetBlacklisted,
+  blacklistResetSession,
+} from "../services/monitoringService";
+import { fetchExamSessions, reconcileAndMergeExamSessions } from "../utils/firestoreService";
 import { getStudentTokens } from "../utils/storage";
 import { subscribeToLiveSessions } from "../utils/liveSync";
 import { LiveStudentEditModal, StudentRowItem } from "./LiveStudentEditModal";
@@ -158,21 +166,16 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
   const handleSyncCloud = async () => {
     setIsSyncing(true);
     try {
-      // Reconcile and unify any fragmented codes during sync
-      const reconcileRes = await reconcileAndMergeExamSessions(exam.id, exam.code);
-      const remoteSessions = await fetchExamSessions(exam.id, exam.code);
+      const remoteSessions = await fetchLiveMonitoringData(exam.code || exam.id);
       if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
-        onUpdateHistory(remoteSessions);
-        if (reconcileRes.mergedSessionsCount > 0) {
-          showActionFeedback(`Sinkronisasi & Penyatuan Berhasil: ${remoteSessions.length} data termuat, ${reconcileRes.mergedSessionsCount} sesi kode berbeda berhasil digabungkan.`);
-        } else {
-          showActionFeedback(`Sinkronisasi berhasil: ${remoteSessions.length} data pengerjaan siswa terdeteksi.`);
-        }
+        const validSessions = remoteSessions.filter((s) => !isSessionResetBlacklisted(s));
+        onUpdateHistory(validSessions);
+        showActionFeedback(`Sinkronisasi berhasil: ${validSessions.length} data pengerjaan siswa terdeteksi.`);
       } else {
         showActionFeedback("Sinkronisasi selesai: Data sudah mutakhir.");
       }
     } catch (err: any) {
-      showActionFeedback("Gagal sinkronisasi cloud: " + (err?.message || "Koneksi terputus"));
+      showActionFeedback("Gagal sinkronisasi data: " + (err?.message || "Koneksi terputus"));
     } finally {
       setIsSyncing(false);
     }
@@ -210,11 +213,16 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
   const historyRef = useRef<StudentExamSession[]>(history);
   historyRef.current = history;
 
-  // Auto-sync heartbeat & real-time LiveSync channel listener
+  // Auto-sync heartbeat: Instant local BroadcastChannel + HTTP Long Polling
   useEffect(() => {
-    // 1. Subscribe to BroadcastChannel for instant cross-tab updates (0ms)
+    let isMounted = true;
+    let pollTimeout: any = null;
+
+    // 1. Subscribe to BroadcastChannel for instant cross-tab updates (0ms latency)
     const unsubscribeLive = subscribeToLiveSessions((incomingSession) => {
-      if (!incomingSession) return;
+      if (!incomingSession || !isMounted) return;
+      if (isSessionResetBlacklisted(incomingSession)) return;
+
       const sId = (incomingSession.examId || "").trim();
       const sCode = (incomingSession.examCode || "").trim().toUpperCase();
       const targetId = (exam.id || "").trim();
@@ -226,7 +234,7 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
         !incomingSession.examCode
       ) {
         if (onUpdateHistory) {
-          const currentList = historyRef.current || [];
+          const currentList = (historyRef.current || []).filter((h) => !isSessionResetBlacklisted(h));
           const existing = [...currentList];
           const idx = existing.findIndex(
             (h) =>
@@ -246,42 +254,21 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
       }
     });
 
-    // 2. Initial immediate sync from cloud / server
-    handleSyncCloud();
+    // 2. Long Polling function with Smart Polling (pauses when browser tab is inactive/hidden)
+    const pollMonitoringData = async () => {
+      if (!isMounted) return;
 
-    // 3. Realtime Firestore snapshot listener + Express server fallback
-    const unsubscribeFirestore = subscribeToExamSessions(exam.id, exam.code, (remoteSessions) => {
-      if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
-        const currentList = historyRef.current || [];
-        const merged = [...currentList];
-        remoteSessions.forEach((rs) => {
-          const idx = merged.findIndex(
-            (m) =>
-              m.id === rs.id ||
-              (m.studentName &&
-                rs.studentName &&
-                m.studentName.trim().toLowerCase() === rs.studentName.trim().toLowerCase() &&
-                m.token === rs.token)
-          );
-          if (idx >= 0) {
-            merged[idx] = { ...merged[idx], ...rs };
-          } else {
-            merged.unshift(rs);
-          }
-        });
-        onUpdateHistory(merged);
-      }
-    });
-
-    // 4. Periodic fallback poll every 2 seconds for real-time responsiveness
-    const interval = setInterval(() => {
-      fetchExamSessions(exam.id, exam.code)
-        .then((remoteSessions) => {
-          if (remoteSessions && remoteSessions.length > 0 && onUpdateHistory) {
-            const currentList = historyRef.current || [];
+      if (typeof document !== "undefined" && !document.hidden) {
+        try {
+          const remoteSessions = await fetchLiveMonitoringData(exam.code || exam.id);
+          if (isMounted && Array.isArray(remoteSessions) && onUpdateHistory) {
+            const currentList = (historyRef.current || []).filter((h) => !isSessionResetBlacklisted(h));
             const merged = [...currentList];
             let changed = false;
+
             remoteSessions.forEach((rs) => {
+              if (isSessionResetBlacklisted(rs)) return;
+
               const idx = merged.findIndex(
                 (m) =>
                   m.id === rs.id ||
@@ -290,6 +277,7 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
                     m.studentName.trim().toLowerCase() === rs.studentName.trim().toLowerCase() &&
                     m.token === rs.token)
               );
+
               if (idx >= 0) {
                 if (
                   merged[idx].status !== rs.status ||
@@ -305,18 +293,28 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
                 changed = true;
               }
             });
+
             if (changed) {
               onUpdateHistory(merged);
             }
           }
-        })
-        .catch(() => {});
-    }, 2000);
+        } catch (err) {
+          console.warn("Long polling monitoring warning:", err);
+        }
+      }
+
+      if (isMounted) {
+        pollTimeout = setTimeout(pollMonitoringData, 5000);
+      }
+    };
+
+    // Execute immediately on mount
+    pollMonitoringData();
 
     return () => {
+      isMounted = false;
       unsubscribeLive();
-      unsubscribeFirestore();
-      clearInterval(interval);
+      if (pollTimeout) clearTimeout(pollTimeout);
     };
   }, [exam.id, exam.code]);
 
@@ -368,6 +366,7 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
 
   const examSessions = history.filter((s) => {
     if (!s) return false;
+    if (isSessionResetBlacklisted(s)) return false;
     const sId = (s.examId || "").trim();
     const sCode = (s.examCode || "").trim().toUpperCase();
     const matchId = cleanExamId && sId === cleanExamId;
@@ -391,15 +390,21 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
   );
 
   const studentRows: StudentRowItem[] = uniqueExamTokens.map((tokenItem) => {
-    const activeSession = examSessions.find(
+    const rawSession = examSessions.find(
       (s) =>
-        s.token === tokenItem.token ||
-        s.nisn === tokenItem.nisn ||
-        s.studentName.toLowerCase().trim() === tokenItem.studentName.toLowerCase().trim()
+        (s.token && tokenItem.token && s.token.trim().toLowerCase() === tokenItem.token.trim().toLowerCase()) ||
+        (s.nisn && tokenItem.nisn && s.nisn.trim() === tokenItem.nisn.trim()) ||
+        (s.studentName && tokenItem.studentName && s.studentName.toLowerCase().trim() === tokenItem.studentName.toLowerCase().trim())
     );
 
-    const effectiveStatus: "belum_mulai" | "sedang_mengerjakan" | "selesai" = activeSession
-      ? activeSession.status === "submitted"
+    // If blacklisted, or token is explicitly marked as 'belum_mulai' without active progress, purge session
+    const isReset = rawSession ? isSessionResetBlacklisted(rawSession) : false;
+    const effectiveSession = (!isReset && rawSession && (rawSession.status === "submitted" || rawSession.status === "in_progress"))
+      ? rawSession
+      : null;
+
+    const effectiveStatus: "belum_mulai" | "sedang_mengerjakan" | "selesai" = effectiveSession
+      ? effectiveSession.status === "submitted"
         ? "selesai"
         : "sedang_mengerjakan"
       : "belum_mulai";
@@ -409,16 +414,19 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
         ...tokenItem,
         status: effectiveStatus,
       },
-      session: activeSession || null,
+      session: effectiveSession,
     };
   });
 
-  // Also include any sessions not in pre-generated token list (e.g. dynamic/manual student inputs)
+  // Also include any active sessions not in pre-generated token list (e.g. dynamic/manual student inputs)
   examSessions.forEach((s) => {
+    if (isSessionResetBlacklisted(s)) return;
+    if (s.status !== "submitted" && s.status !== "in_progress") return;
+
     const isAlreadyListed = studentRows.some(
       (row) =>
         row.session?.id === s.id ||
-        row.tokenItem.studentName.toLowerCase().trim() === s.studentName.toLowerCase().trim()
+        (row.tokenItem.studentName && s.studentName && row.tokenItem.studentName.toLowerCase().trim() === s.studentName.toLowerCase().trim())
     );
     if (!isAlreadyListed) {
       studentRows.push({
@@ -1174,7 +1182,23 @@ export const LiveMonitoringDashboard: React.FC<LiveMonitoringDashboardProps> = (
                               onClick={() => {
                                 const sName = tokenItem.studentName;
                                 if (confirm(`Reset sesi pengerjaan siswa "${sName}"? Seluruh jawaban tersimpan akan dikosongkan dan status diubah ke 'Belum Mulai' agar siswa dapat mengulang ujian dari awal.`)) {
+                                  blacklistResetSession(session?.id, sName, tokenItem.token, tokenItem.nisn, exam.code);
                                   onResetStudentSession(session?.id, sName, tokenItem.token, tokenItem.nisn);
+                                  
+                                  const cleanHist = (historyRef.current || []).filter((h) => !isSessionResetBlacklisted(h));
+                                  historyRef.current = cleanHist;
+                                  onUpdateHistory?.(cleanHist);
+
+                                  if (tokens && onUpdateTokens) {
+                                    const updatedTokens = tokens.map((t) => {
+                                      if (t.id === tokenItem.id || (t.studentName && t.studentName.toLowerCase().trim() === sName.toLowerCase().trim())) {
+                                        return { ...t, status: "belum_mulai" as const };
+                                      }
+                                      return t;
+                                    });
+                                    onUpdateTokens(updatedTokens);
+                                  }
+
                                   showActionFeedback(`Sesi ujian "${sName}" berhasil di-reset menjadi Belum Mulai.`);
                                 }
                               }}

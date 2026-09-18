@@ -76,10 +76,8 @@ import {
   syncExamToFirestore,
   fetchExamFromFirestore,
   syncStudentSessionToFirestore,
-  isQuotaExceeded,
-  subscribeQuotaStatus,
-  FIRESTORE_UPGRADE_URL
 } from "./utils/firestoreService";
+import { blacklistResetSession, isSessionResetBlacklisted } from "./services/monitoringService";
 
 export default function App() {
   // Decode any packed exam payload from URL
@@ -249,13 +247,6 @@ export default function App() {
   });
   const [remoteFetchError, setRemoteFetchError] = useState<string | null>(null);
   const [manualStudentCode, setManualStudentCode] = useState<string>("");
-  const [isFirestoreQuotaExceeded, setIsFirestoreQuotaExceeded] = useState<boolean>(isQuotaExceeded);
-
-  useEffect(() => {
-    return subscribeQuotaStatus((exceeded) => {
-      setIsFirestoreQuotaExceeded(exceeded);
-    });
-  }, []);
 
   const applyLoadedRemoteExam = (loadedExam: ExamPackage, token?: string, tokensList?: StudentTokenItem[]) => {
     setExamsState((prev) => {
@@ -1046,14 +1037,16 @@ export default function App() {
     const cleanNisn = (nisn || "").trim();
 
     markRecentlyDeleted(cleanId, studentName, token, nisn);
+    blacklistResetSession(cleanId, studentName, token, nisn, activeExam.code);
 
     // 1. Remove from historyState
     setHistoryState((prevHistory) => {
       const updatedHistory = prevHistory.filter((item) => {
         const matchId = cleanId && item.id === cleanId;
         const matchName = cleanName && item.studentName.trim().toLowerCase() === cleanName;
+        const matchToken = cleanToken && item.token && item.token.trim().toLowerCase() === cleanToken;
         const matchNisn = cleanNisn && item.nisn && item.nisn.trim() === cleanNisn;
-        return !(matchId || matchName || matchNisn);
+        return !(matchId || matchName || matchToken || matchNisn);
       });
       saveExamHistory(updatedHistory);
       return updatedHistory;
@@ -1067,8 +1060,9 @@ export default function App() {
       const updatedTokens = prevTokens.map((t) => {
         const matchId = cleanId && t.id === cleanId;
         const matchName = cleanName && t.studentName.trim().toLowerCase() === cleanName;
+        const matchToken = cleanToken && t.token && t.token.trim().toLowerCase() === cleanToken;
         const matchNisn = cleanNisn && t.nisn && t.nisn.trim() === cleanNisn;
-        if (matchId || matchName || matchNisn) {
+        if (matchId || matchName || matchToken || matchNisn) {
           return { ...t, status: "belum_mulai" as const };
         }
         return t;
@@ -1081,8 +1075,9 @@ export default function App() {
     if (activeExam.tokens && activeExam.tokens.length > 0) {
       const updatedExamTokens = activeExam.tokens.map((t) => {
         const matchName = cleanName && t.studentName.trim().toLowerCase() === cleanName;
+        const matchToken = cleanToken && t.token && t.token.trim().toLowerCase() === cleanToken;
         const matchNisn = cleanNisn && t.nisn && t.nisn.trim() === cleanNisn;
-        if (matchName || matchNisn) {
+        if (matchName || matchToken || matchNisn) {
           return { ...t, status: "belum_mulai" as const };
         }
         return t;
@@ -1116,14 +1111,16 @@ export default function App() {
     const cleanNisn = (payload.nisn || "").trim();
 
     markRecentlyDeleted(cleanId, payload.studentName, payload.token, payload.nisn);
+    blacklistResetSession(cleanId, payload.studentName, payload.token, payload.nisn, activeExam.code);
 
     // 1. Remove from history
     setHistoryState((prevHistory) => {
       const updatedHistory = prevHistory.filter((item) => {
         const matchId = cleanId && item.id === cleanId;
         const matchName = cleanName && item.studentName.trim().toLowerCase() === cleanName;
+        const matchToken = cleanToken && item.token && item.token.trim().toLowerCase() === cleanToken;
         const matchNisn = cleanNisn && item.nisn && item.nisn.trim() === cleanNisn;
-        return !(matchId || matchName || matchNisn);
+        return !(matchId || matchName || matchToken || matchNisn);
       });
       saveExamHistory(updatedHistory);
       return updatedHistory;
@@ -1251,6 +1248,7 @@ export default function App() {
 
     students.forEach((s) => {
       markRecentlyDeleted(s.sessionId, s.studentName, s.token, s.nisn);
+      blacklistResetSession(s.sessionId, s.studentName, s.token, s.nisn, activeExam.code);
     });
 
     const sessionIdsToReset = new Set(students.map((s) => (s.sessionId || "").trim()).filter(Boolean));
@@ -1810,31 +1808,6 @@ export default function App() {
           </div>
         )}
       </header>
-
-      {/* Firestore Quota Notice Banner */}
-      {isFirestoreQuotaExceeded && (
-        <div className="bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border-b border-amber-500/30 px-4 py-2 text-xs">
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2.5">
-            <div className="flex items-center gap-2.5 text-amber-200">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
-              <span className="text-xs">
-                <strong>Status Database Cloud:</strong> Kuota tulis harian gratis Firebase Firestore (20.000 unit/hari) telah habis untuk hari ini (akan di-reset esok hari). Sistem otomatis mengalihkan penyimpanan data & live monitoring ke <strong>Server CBT & Google Sheets/Drive</strong> agar ujian tetap lancar tanpa hambatan.
-              </span>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <a
-                href={FIRESTORE_UPGRADE_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3 py-1 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-[11px] font-bold flex items-center gap-1.5 transition-all shadow-sm"
-              >
-                <span>Lihat Firebase Console</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
