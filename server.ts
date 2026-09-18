@@ -21,9 +21,10 @@ function formatGeminiError(error: any): string {
     msg.includes("503") ||
     msg.includes("high demand") ||
     msg.includes("UNAVAILABLE") ||
-    msg.includes("temporarily overloaded")
+    msg.includes("temporarily overloaded") ||
+    msg.includes("overloaded")
   ) {
-    return "Server Google Gemini sedang mengalami lonjakan trafik tinggi sementara (503 Service Unavailable). Sistem telah mencoba otomatis, silakan klik 'Coba Lagi' dalam beberapa detik.";
+    return "Server Google Gemini sedang mengalami lonjakan trafik tinggi sementara (503 Service Unavailable). Sistem telah menyiapkan failover model alternatif, silakan klik 'Coba Lagi' dalam beberapa saat.";
   }
   if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
     return "Batas kuota harian/menit API Gemini telah tercapai (429 Too Many Requests). Silakan tunggu sebentar sebelum mencoba kembali.";
@@ -46,9 +47,8 @@ async function callGeminiWithResilience(
   }
 ) {
   const models = [
-    params.preferredModel || "gemini-3.6-flash",
+    params.preferredModel || "gemini-3.8-flash",
     ...(params.fallbackModels || [
-      "gemini-3.7-flash",
       "gemini-flash-latest",
       "gemini-3.1-flash-lite",
     ]),
@@ -68,21 +68,30 @@ async function callGeminiWithResilience(
       } catch (err: any) {
         lastError = err;
         const errMsg = err?.message || "";
-        const isTransient =
+        const is503 =
           errMsg.includes("503") ||
           errMsg.includes("high demand") ||
           errMsg.includes("UNAVAILABLE") ||
+          errMsg.includes("temporarily overloaded") ||
+          errMsg.includes("overloaded");
+        const isTransient =
+          is503 ||
           errMsg.includes("429") ||
           errMsg.includes("RESOURCE_EXHAUSTED") ||
           errMsg.includes("fetch failed");
 
         console.warn(`[Gemini Attempt Failed] Model: ${model}, Attempt: ${attempt + 1}/${maxRetries + 1}. Error: ${errMsg}`);
 
-        if (isTransient && attempt < maxRetries) {
-          // Wait with exponential backoff before retrying same model
-          const backoffDelay = (attempt + 1) * 1200 + Math.random() * 500;
-          await sleep(backoffDelay);
-          continue;
+        if (isTransient) {
+          // If first attempt failed on 503 / 429, wait briefly and retry once on same model; then fail over to next model
+          if (attempt < 1) {
+            const backoffDelay = (attempt + 1) * 1000 + Math.random() * 400;
+            await sleep(backoffDelay);
+            continue;
+          } else {
+            // Failover to next fallback model immediately
+            break;
+          }
         } else {
           // Break out to try next fallback model
           break;
@@ -1065,7 +1074,7 @@ app.get("/api/gemini/status", (req, res) => {
       configured: false,
       source: "none",
       message: "Kunci API Gemini belum terhubung.",
-      model: "gemini-3.7-flash",
+      model: "gemini-3.8-flash",
     });
   }
 
@@ -1078,7 +1087,7 @@ app.get("/api/gemini/status", (req, res) => {
     configured: true,
     source: headerKey ? "custom" : "env",
     maskedKey,
-    model: "gemini-3.7-flash",
+    model: "gemini-3.8-flash",
     message: headerKey
       ? "Kunci API Gemini kustom aktif dan terhubung."
       : "Kunci API Gemini sistem server aktif dan terhubung.",
@@ -1093,8 +1102,8 @@ app.post("/api/gemini/test-connection", async (req, res) => {
     const ai = getGeminiClient(customKey);
 
     const { response, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: "Balas dengan tepat satu kata: Siap.",
       config: {
         systemInstruction: "Anda adalah asisten AI pemeriksa status koneksi.",
@@ -1160,8 +1169,8 @@ Buatlah ${count} butir soal ujian dengan ketentuan:
 Kembalikan format JSON yang valid persis sesuai skema yang diminta.`;
 
     const { response, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: prompt,
       config: {
         systemInstruction:
@@ -1289,7 +1298,7 @@ Ketentuan SVG:
 - Tambahkan background rect bergradasi halus di dalam SVG.`;
 
     const { response: svgResponse, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.7-flash",
+      preferredModel: "gemini-3.8-flash",
       fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: svgPrompt,
       config: {
@@ -1349,8 +1358,8 @@ Berikan:
 3. Kalimat motivasi apresiatif dan membangkitkan semangat belajar siswa.`;
 
     const { response, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: prompt,
       config: {
         systemInstruction: "Anda adalah guru konselor dan evaluator pedagogik yang hangat, memotivasi, dan memberikan saran praktis bagi kemajuan belajar siswa.",
@@ -1434,8 +1443,8 @@ Instruksi Analisis:
 Kembalikan respon DALAM FORMAT JSON PERSIS SESUAI SKEMA.`;
 
     const { response, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: prompt,
       config: {
         systemInstruction:
@@ -1561,8 +1570,8 @@ Tugas Anda:
 2. Berikan feedback penjelasan singkat (1-3 kalimat) mengapa skor tersebut diberikan dan koreksi konsep jika ada kekeliruan.`;
 
     const { response, modelUsed } = await callGeminiWithResilience(ai, {
-      preferredModel: "gemini-3.6-flash",
-      fallbackModels: ["gemini-3.7-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"],
+      preferredModel: "gemini-3.8-flash",
+      fallbackModels: ["gemini-flash-latest", "gemini-3.1-flash-lite"],
       contents: prompt,
       config: {
         systemInstruction:

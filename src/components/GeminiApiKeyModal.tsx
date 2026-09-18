@@ -167,7 +167,7 @@ export const GeminiApiKeyModal: React.FC<GeminiApiKeyModalProps> = ({
               </div>
               <p className="text-xs text-slate-400 mt-1">
                 {serverStatus?.configured
-                  ? `Model aktif: ${serverStatus.model || "gemini-3.7-flash"} (${serverStatus.maskedKey || "Kunci Aktif"})`
+                  ? `Model aktif: ${serverStatus.model || "gemini-3.8-flash"} (${serverStatus.maskedKey || "Kunci Aktif"})`
                   : "Masukkan kunci API Gemini Anda di bawah untuk mengaktifkan seluruh fitur kecerdasan buatan."}
               </p>
             </div>

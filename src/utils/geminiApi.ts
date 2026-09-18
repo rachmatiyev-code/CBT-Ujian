@@ -11,9 +11,10 @@ export function formatGeminiClientError(error: any): string {
     msg.includes("503") ||
     msg.includes("high demand") ||
     msg.includes("UNAVAILABLE") ||
-    msg.includes("temporarily overloaded")
+    msg.includes("temporarily overloaded") ||
+    msg.includes("overloaded")
   ) {
-    return "Server Google Gemini sedang mengalami lonjakan beban tinggi sementara (503 Service Unavailable). Silakan klik 'Coba Lagi' dalam beberapa saat.";
+    return "Server Google Gemini sedang mengalami lonjakan beban tinggi sementara (503 Service Unavailable). Sistem telah menyiapkan failover model alternatif, silakan klik 'Coba Lagi' dalam beberapa saat.";
   }
   if (msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota")) {
     return "Batas kuota harian/menit API Gemini telah tercapai (429 Too Many Requests). Silakan tunggu sebentar sebelum mencoba kembali.";
@@ -22,6 +23,56 @@ export function formatGeminiClientError(error: any): string {
     return "Kunci API Gemini tidak valid atau belum diaktifkan. Silakan periksa kembali Kunci API Anda di menu 'Kunci API Gemini'.";
   }
   return msg || "Terjadi kendala saat memproses permintaan dengan Google Gemini AI.";
+}
+
+/**
+ * Resilient client-side caller that automatically cascades across models on 503/429
+ */
+async function callGeminiClientWithResilience(
+  ai: GoogleGenAI,
+  params: {
+    contents: any;
+    config?: any;
+    preferredModel?: string;
+  }
+) {
+  const models = [
+    params.preferredModel || "gemini-3.8-flash",
+    "gemini-flash-latest",
+    "gemini-3.1-flash-lite",
+  ];
+  let lastError: any = null;
+
+  for (const model of models) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: params.contents,
+        config: params.config,
+      });
+      return { response, modelUsed: model };
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || "";
+      const isTransient =
+        errMsg.includes("503") ||
+        errMsg.includes("high demand") ||
+        errMsg.includes("UNAVAILABLE") ||
+        errMsg.includes("temporarily overloaded") ||
+        errMsg.includes("overloaded") ||
+        errMsg.includes("429") ||
+        errMsg.includes("RESOURCE_EXHAUSTED");
+
+      console.warn(`[Client Gemini Failed] Model: ${model}. Error: ${errMsg}`);
+      if (isTransient) {
+        // Immediately try the next fallback model in the list
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw new Error(formatGeminiClientError(lastError));
 }
 
 /**
@@ -98,7 +149,7 @@ export async function checkGeminiStatus(): Promise<GeminiStatusResult> {
       configured: true,
       source: "custom",
       maskedKey,
-      model: "gemini-3.7-flash",
+      model: "gemini-3.8-flash",
       message: "Kunci API Gemini kustom aktif di peramban.",
     };
   }
@@ -106,7 +157,7 @@ export async function checkGeminiStatus(): Promise<GeminiStatusResult> {
   return {
     configured: false,
     source: "none",
-    model: "gemini-3.7-flash",
+    model: "gemini-3.8-flash",
     message: "Kunci API Gemini belum terhubung.",
   };
 }
@@ -139,7 +190,7 @@ export async function testGeminiConnection(keyToTest?: string): Promise<GeminiTe
       if (parsed.data.success) {
         return {
           success: true,
-          message: parsed.data.message || "Koneksi ke Google Gemini AI (gemini-3.7-flash) berhasil!",
+          message: parsed.data.message || "Koneksi ke Google Gemini AI (gemini-3.8-flash) berhasil!",
           latencyMs,
         };
       } else {
@@ -158,8 +209,8 @@ export async function testGeminiConnection(keyToTest?: string): Promise<GeminiTe
   if (key) {
     try {
       const ai = new GoogleGenAI({ apiKey: key });
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const { response, modelUsed } = await callGeminiClientWithResilience(ai, {
+        preferredModel: "gemini-3.8-flash",
         contents: "Balas dengan tepat satu kata: Siap.",
         config: {
           systemInstruction: "Anda adalah asisten AI penguji koneksi.",
@@ -169,7 +220,7 @@ export async function testGeminiConnection(keyToTest?: string): Promise<GeminiTe
       const latencyMs = Date.now() - startTime;
       return {
         success: true,
-        message: `Koneksi langsung ke Google Gemini AI (gemini-3.7-flash) berhasil! (${response.text?.trim() || "Siap"})`,
+        message: `Koneksi langsung ke Google Gemini AI (${modelUsed}) berhasil! (${response.text?.trim() || "Siap"})`,
         latencyMs,
       };
     } catch (clientErr: any) {
@@ -245,8 +296,8 @@ Ketentuan SVG:
 - Background rect warna gelap elegan (#1e293b atau gradien modern) dan elemen diagram berwarna cerah kontras (#38bdf8, #818cf8, #34d399, #f43f5e, #fbbf24).
 - Lengkapi dengan label teks penjelas yang jelas dan panah jika perlu.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const { response } = await callGeminiClientWithResilience(ai, {
+        preferredModel: "gemini-3.8-flash",
         contents: svgPrompt,
         config: {
           systemInstruction:
@@ -367,8 +418,8 @@ Buatlah ${params.count} butir soal ujian dengan ketentuan:
 
 Kembalikan format JSON yang valid persis sesuai skema yang diminta.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
+    const { response } = await callGeminiClientWithResilience(ai, {
+      preferredModel: "gemini-3.8-flash",
       contents: prompt,
       config: {
         systemInstruction:
@@ -511,8 +562,8 @@ Berikan:
 2. Rekomendasi 3 materi spesifik yang perlu dipelajari kembali
 3. Kalimat motivasi apresiatif dan membangkitkan semangat belajar siswa.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const { response } = await callGeminiClientWithResilience(ai, {
+        preferredModel: "gemini-3.8-flash",
         contents: prompt,
         config: {
           systemInstruction:
@@ -580,8 +631,8 @@ Tugas Anda:
 1. Berikan skor numerik yang adil antara 0 hingga ${maxScore}.
 2. Berikan feedback penjelasan singkat (1-3 kalimat) mengapa skor tersebut diberikan.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const { response } = await callGeminiClientWithResilience(ai, {
+        preferredModel: "gemini-3.8-flash",
         contents: prompt,
         config: {
           systemInstruction:
@@ -666,8 +717,8 @@ Nilai: ${score}/${maxScore} (${percentage}%) | Status: ${isPassed ? "TUNTAS (PEN
 Soal Salah: ${(params.wrongQuestions || []).map((q, i) => `${i+1}. [${q.topicTag || "Materi"}] ${q.questionText} (Kunci: ${q.correctAnswer}, Siswa: ${q.studentAnswer})`).join("; ") || "Tidak ada, sempurna"}
 Susun: diagnosis pemahaman, program pengayaan (materi advance, tugas kreatif, tantangan HOTS), program remidi (klarifikasi konsep, langkah perbaikan, soal latihan terarah), dan motivasi.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const { response } = await callGeminiClientWithResilience(ai, {
+        preferredModel: "gemini-3.8-flash",
         contents: prompt,
         config: {
           systemInstruction: "Anda adalah konselor dan guru evaluator kurikulum merdeka.",
