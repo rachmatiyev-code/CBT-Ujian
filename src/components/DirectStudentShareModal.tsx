@@ -159,15 +159,11 @@ export const DirectStudentShareModal: React.FC<DirectStudentShareModalProps> = (
     );
   }, [tokens, currentExam.tokens, currentExam.code, currentExam.teacherProfile?.gradeLevel, currentExam.id]);
 
-  // When modal is opened or exam is switched, auto-sync package to Google Sheets/GAS, backend server, and register Drive entry
+  // When modal is opened or exam is switched, sync package to local backend server and register Drive entry
+  // Drive write is only triggered when teacher explicitly clicks "Unggah / Perbarui Naskah di Google Drive"
   useEffect(() => {
     if (isOpen && currentExam && currentExam.id) {
-      // 1. Sync to Google Apps Script / Sheets & local cache
-      syncExamToGAS(currentExam, availableTokens)
-        .then(() => setCloudSynced(true))
-        .catch((err) => console.warn("GAS sync error on share modal:", err));
-
-      // 2. Sync to Express backend
+      // 1. Sync to Express backend for 0-quota local network and direct links
       fetch("/api/exams/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

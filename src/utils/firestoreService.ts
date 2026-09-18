@@ -47,12 +47,7 @@ export async function syncExamToFirestore(
     });
   } catch {}
 
-  // 2. Simpan ke Google Apps Script / Google Sheets
-  try {
-    await syncExamToGAS(exam);
-  } catch {}
-
-  return { success: true, message: "Ujian berhasil disinkronkan ke Server & Google Drive" };
+  return { success: true, message: "Ujian berhasil disimpan ke Server lokal CBT" };
 }
 
 /**

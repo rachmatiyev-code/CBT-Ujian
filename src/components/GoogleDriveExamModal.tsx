@@ -16,7 +16,8 @@ import {
   Link2,
   FileCode,
   Globe,
-  Database
+  Database,
+  Trash2,
 } from "lucide-react";
 import { ExamPackage, StudentTokenItem } from "../types";
 import {
@@ -25,6 +26,8 @@ import {
   saveExamToGoogleDrive,
   loadExamFromGoogleDrive,
   extractGoogleDriveFileId,
+  formatExamDriveFileName,
+  cleanupDuplicateDriveFiles,
 } from "../utils/googleDrive";
 import {
   getCachedAccessToken,
@@ -39,6 +42,7 @@ import {
   fetchExamFromGAS,
   listExamsFromGAS,
   getGasBackendCode,
+  cleanupGasDriveDuplicates,
 } from "../utils/gasService";
 import { getExamPackages, saveExamPackages, getStudentTokens } from "../utils/storage";
 
@@ -80,6 +84,58 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
   const [driveLinkInput, setDriveLinkInput] = useState("");
   const [isLoadingFromLink, setIsLoadingFromLink] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [isCleaningDuplicates, setIsCleaningDuplicates] = useState(false);
+
+  const handleCleanupDuplicates = async () => {
+    if (
+      !confirm(
+        "Bersihkan file duplikat (seperti file ganda Naskah_Soal_CBT.json) di Google Drive? Sistem akan mempertahankan 1 file terbaru per naskah ujian dan memindahkan file duplikat lama ke Sampah (Trash)."
+      )
+    ) {
+      return;
+    }
+    setIsCleaningDuplicates(true);
+    setStatusMsg(null);
+    try {
+      let trashedTotal = 0;
+      let executed = false;
+
+      if (isGasConfigured()) {
+        const gasClean = await cleanupGasDriveDuplicates();
+        if (gasClean.success) {
+          trashedTotal += gasClean.trashedCount || 0;
+          executed = true;
+        }
+      }
+
+      const token = getCachedAccessToken();
+      if (token) {
+        const driveClean = await cleanupDuplicateDriveFiles(token);
+        trashedTotal += driveClean.trashedCount || 0;
+        executed = true;
+      }
+
+      if (executed) {
+        setStatusMsg({
+          type: "success",
+          text: `✓ Pembersihan berhasil! ${trashedTotal} file duplikat lama dipindahkan ke Sampah Google Drive. Setiap naskah kini memiliki 1 file unik terbaru.`,
+        });
+        await fetchExamsList();
+      } else {
+        setStatusMsg({
+          type: "info",
+          text: "Silakan hubungkan Web App Google Apps Script atau aktifkan Google Drive untuk menjalankan pembersihan duplikat.",
+        });
+      }
+    } catch (err: any) {
+      setStatusMsg({
+        type: "error",
+        text: err?.message || "Gagal membersihkan file duplikat di Google Drive.",
+      });
+    } finally {
+      setIsCleaningDuplicates(false);
+    }
+  };
 
   // Load GAS script code on demand
   useEffect(() => {
@@ -665,6 +721,15 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                 <p className="text-xs text-slate-400">
                   {activeExam.teacherProfile.subject} • Kode: <strong className="font-mono text-emerald-400">{activeExam.code}</strong> • {activeExam.questions.length} Butir Soal ({activeExam.totalScore} Poin)
                 </p>
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] text-slate-300 bg-black/40 border border-slate-700/60 px-2.5 py-1 rounded-lg font-mono">
+                    Nama File: <strong>{formatExamDriveFileName(activeExam)}</strong>
+                  </span>
+                  <span className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                    <Check className="w-3 h-3 text-emerald-400" />
+                    Pembaruan Langsung (Bebas Duplikat)
+                  </span>
+                </div>
               </div>
 
               <button
@@ -844,6 +909,15 @@ export const GoogleDriveExamModal: React.FC<GoogleDriveExamModalProps> = ({
                 <span>Daftar Naskah Soal di Google Drive ({driveExams.length})</span>
               </h3>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={handleCleanupDuplicates}
+                  disabled={isCleaningDuplicates}
+                  className="px-2.5 py-1 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Pindai dan bersihkan file naskah duplikat lama ke Trash Google Drive"
+                >
+                  <Trash2 className={`w-3.5 h-3.5 ${isCleaningDuplicates ? "animate-spin" : ""}`} />
+                  <span>{isCleaningDuplicates ? "Membersihkan..." : "Bersihkan Duplikat"}</span>
+                </button>
                 {isConnected && (
                   <button
                     onClick={handleSyncAllExams}

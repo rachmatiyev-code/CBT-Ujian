@@ -517,6 +517,10 @@ function doPost(e) {
         result = saveExamPackage(data.exam, data.tokens, targetSpreadsheetId);
         break;
 
+      case "cleanupDuplicates":
+        result = cleanupDriveDuplicates();
+        break;
+
       case "saveSession":
       case "submitExam":
         result = saveStudentSession(data.session, data.aiAnalysis, targetSpreadsheetId);
@@ -854,28 +858,21 @@ function logToMasterData(ss, entry) {
 
 /**
  * Format nama file naskah soal Google Drive:
- * Format: "kelas_nama mata pelajaran_kode naskah soal.json"
- * Contoh: "Kelas VI_Pendidikan Pancasila_PP-01.json"
+ * Format: "Naskah_Soal_[ExamID].json" atau "Naskah_Soal_[ExamCode].json"
+ * Contoh: "Naskah_Soal_PP-01.json", "Naskah_Soal_exam-174123.json"
+ * Mencegah duplikasi file generic Naskah_Soal_CBT.json di Google Drive.
  */
 function formatExamFileName(exam) {
-  var teacherProf = (exam && exam.teacherProfile) || {};
-  var cleanKelas = (teacherProf.gradeLevel || "Semua Kelas")
-    .trim()
-    .replace(/[/\\?%*:|"<>]/g, "")
-    .replace(/\s+/g, " ");
-
-  var cleanMapel = (teacherProf.subject || exam.title || "Mata Pelajaran")
-    .trim()
-    .replace(/[/\\?%*:|"<>]/g, "")
-    .replace(/\s+/g, " ");
-
-  var cleanKode = (exam.code || "SOAL")
+  var cleanId = ((exam && exam.id) || "").trim().replace(/[/\\?%*:|"<>]/g, "");
+  var cleanKode = ((exam && exam.code) || "")
     .trim()
     .toUpperCase()
     .replace(/[/\\?%*:|"<>]/g, "")
     .replace(/\s+/g, "_");
 
-  return cleanKelas + "_" + cleanMapel + "_" + cleanKode + ".json";
+  var identifier = cleanKode && cleanKode !== "SOAL" ? cleanKode : cleanId || "CBT";
+
+  return "Naskah_Soal_" + identifier + ".json";
 }
 
 /**
@@ -1115,13 +1112,14 @@ function saveExamPackage(exam, tokens, customSpreadsheetId) {
   var examCode = (exam.code || "").trim().toUpperCase();
   var examTitle = exam.title || "Ujian CBT";
 
-  // 1. Simpan naskah soal dengan format nama: kelas_nama mata pelajaran_kode naskah soal.json
+  // 1. Simpan naskah soal dengan format nama: Naskah_Soal_[ExamID].json
   var fileName = formatExamFileName(exam);
+  var cleanId = ((exam && exam.id) || "").trim().replace(/[/\\?%*:|"<>]/g, "");
   var cleanKode = examCode.replace(/[/\\?%*:|"<>]/g, "");
 
-  // Cari file naskah soal yang sudah ada di subfolder 'Data Soal'
+  // Cari file naskah soal yang sudah ada di subfolder 'Data Soal' (termasuk generic Naskah_Soal_CBT.json)
   var matchedFile = null;
-  var duplicatesToTrash = [];
+  var candidateFiles = [];
 
   try {
     var allFiles = folders.soal.getFiles();
@@ -1129,21 +1127,31 @@ function saveExamPackage(exam, tokens, customSpreadsheetId) {
       var f = allFiles.next();
       if (f.isTrashed()) continue;
       var fName = f.getName();
-      // Cocokkan jika nama persis SAMA atau mengandung kode ujian ini
-      if (fName === fileName || (cleanKode.length >= 2 && (fName.indexOf(cleanKode) !== -1 || fName.indexOf("[" + cleanKode + "]") !== -1))) {
-        if (!matchedFile) {
-          matchedFile = f;
-        } else {
-          duplicatesToTrash.push(f);
-        }
+      // Cocokkan jika nama persis SAMA, generic Naskah_Soal_CBT.json, atau mengandung kode/ID ujian
+      var isMatch = (fName === fileName) ||
+                    (fName.toLowerCase() === "naskah_soal_cbt.json") ||
+                    (cleanKode.length >= 2 && (fName.indexOf(cleanKode) !== -1 || fName.indexOf("[" + cleanKode + "]") !== -1)) ||
+                    (cleanId.length >= 4 && fName.indexOf(cleanId) !== -1);
+
+      if (isMatch) {
+        candidateFiles.push(f);
       }
     }
 
-    // Bersihkan file duplikat lama agar hanya ada 1 file naskah soal di Drive
-    for (var d = 0; d < duplicatesToTrash.length; d++) {
-      try {
-        duplicatesToTrash[d].setTrashed(true);
-      } catch (eTrash) {}
+    if (candidateFiles.length > 0) {
+      // Urutkan berdasarkan waktu update terbaru (descending)
+      candidateFiles.sort(function(a, b) {
+        return b.getLastUpdated().getTime() - a.getLastUpdated().getTime();
+      });
+
+      matchedFile = candidateFiles[0];
+
+      // Bersihkan file duplikat lama ke Trash agar hanya ada 1 file naskah soal di Drive
+      for (var d = 1; d < candidateFiles.length; d++) {
+        try {
+          candidateFiles[d].setTrashed(true);
+        } catch (eTrash) {}
+      }
     }
   } catch (eSearch) {
     console.warn("Pencarian file soal di Drive:", eSearch);
@@ -2142,4 +2150,80 @@ function getAppBackup(fileId) {
   var parsed = JSON.parse(content);
   return { success: true, data: parsed, fileName: file.getName() };
 }
+
+/**
+ * Pembersihan File Duplikat Google Drive:
+ * Memindai subfolder 'Data Soal' untuk file Naskah_Soal_CBT.json dan file soal berduplikat.
+ * Menyimpan hanya 1 file terbaru per naskah soal dan memindahkan file duplikat lama ke Trash.
+ */
+function cleanupDriveDuplicates() {
+  var folders = getSystemFolders();
+  var foldersToScan = [folders.soal, folders.master];
+  var trashedCount = 0;
+  var keptList = [];
+
+  for (var fIdx = 0; fIdx < foldersToScan.length; fIdx++) {
+    var folder = foldersToScan[fIdx];
+    if (!folder) continue;
+
+    var groups = {};
+    var allFiles = folder.getFiles();
+
+    while (allFiles && allFiles.hasNext()) {
+      var f = allFiles.next();
+      if (f.isTrashed()) continue;
+
+      var name = f.getName().trim();
+      var key = name.toLowerCase();
+
+      // Generic Naskah_Soal_CBT.json grouping
+      if (key === "naskah_soal_cbt.json") {
+        key = "generic_naskah_soal_cbt";
+      } else if (key.indexOf("naskah_soal_") === 0) {
+        key = key.replace(/\.json$/i, "");
+      } else {
+        // Group by exact file name
+        key = "file_" + key;
+      }
+
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(f);
+    }
+
+    // Process each group
+    for (var gKey in groups) {
+      var list = groups[gKey];
+      if (list.length > 1) {
+        // Sort descending by updated timestamp
+        list.sort(function(a, b) {
+          return b.getLastUpdated().getTime() - a.getLastUpdated().getTime();
+        });
+
+        keptList.push(list[0].getName() + " (" + list[0].getId() + ")");
+
+        // Trash all older duplicates
+        for (var i = 1; i < list.length; i++) {
+          try {
+            list[i].setTrashed(true);
+            trashedCount++;
+          } catch (eTrash) {
+            console.warn("Gagal memindahkan duplikat ke trash:", eTrash);
+          }
+        }
+      } else if (list.length === 1) {
+        keptList.push(list[0].getName());
+      }
+    }
+  }
+
+  return {
+    success: true,
+    trashedCount: trashedCount,
+    keptCount: keptList.length,
+    message: "Berhasil membersihkan " + trashedCount + " file duplikat di Google Drive."
+  };
+}
+
 

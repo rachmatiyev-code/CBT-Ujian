@@ -778,3 +778,36 @@ function doPost(e) {
   }
 }`;
 }
+
+/**
+ * Request Google Apps Script to scan Drive folders, clean up duplicate
+ * Naskah_Soal_CBT.json files and duplicate exams, keeping only the single newest one.
+ */
+export async function cleanupGasDriveDuplicates(): Promise<{
+  success: boolean;
+  trashedCount?: number;
+  keptCount?: number;
+  message: string;
+}> {
+  if (!isGasConfigured()) {
+    return {
+      success: false,
+      message: "Google Apps Script belum dikonfigurasi.",
+    };
+  }
+
+  try {
+    const res = await callGasEndpoint("cleanupDuplicates", {});
+    return {
+      success: Boolean(res && res.success),
+      trashedCount: res?.trashedCount ?? 0,
+      keptCount: res?.keptCount ?? 0,
+      message: res?.message || "Pembersihan duplikat di Google Drive selesai.",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: err?.message || "Gagal membersihkan duplikat melalui Google Apps Script.",
+    };
+  }
+}

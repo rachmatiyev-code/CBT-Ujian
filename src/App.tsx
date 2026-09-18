@@ -672,13 +672,13 @@ export default function App() {
     }
   }, [activeTab, activeExam?.code, isTeacherTrial]);
 
-  // Automatically broadcast and sync active exam to Firestore, server & Google Sheets for 2-way multi-device discovery
-  // CRITICAL SECURITY RULE: Only run for teacher workspace! NEVER for student devices!
+  // Automatically broadcast and sync active exam to local server share registry for 2-way multi-device discovery
+  // CRITICAL: Local-First storage. Auto-sync to Google Drive is disabled during editing/navigation to prevent duplicate files.
+  // Google Drive is updated exclusively upon manual Save/Export or Bank Soal synchronization.
   useEffect(() => {
     if (isDirectStudentMode) return;
     if (activeExam?.id && activeExam?.code) {
       syncExamToFirestore(activeExam, activeExamTokens).catch(() => {});
-      syncExamToGAS(activeExam, activeExamTokens).catch(() => {});
       fetch("/api/exams/share", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -855,9 +855,7 @@ export default function App() {
     syncExamToFirestore(updated, tokens).catch((err) =>
       console.warn("Firestore sync error:", err)
     );
-    syncExamToGAS(updated, tokens).catch((err) =>
-      console.warn("GAS sync error:", err)
-    );
+    // Google Drive auto-sync is disabled during editing to prevent creating duplicate files in Drive.
     // If the exam package contains an updated schoolProfile, sync it globally as well
     if (updated.schoolProfile) {
       setSchoolProfileState(updated.schoolProfile);

@@ -108,28 +108,23 @@ export interface GoogleDriveExamItem extends GoogleDriveFileItem {
 }
 
 /**
- * Generates standard Google Drive filename format:
- * kelas_mata pelajaran_kode soal.json
- * Contoh: "Kelas VI_Pendidikan Pancasila_PP-01.json"
+ * Generates unique Google Drive filename format using a distinct identifier:
+ * Naskah_Soal_[ExamID].json or Naskah_Soal_[ExamCode].json
+ * Contoh: "Naskah_Soal_PP-01.json", "Naskah_Soal_exam-1741234.json"
+ * Mencegah pembuatan file duplikat generic Naskah_Soal_CBT.json di Google Drive.
  */
 export function formatExamDriveFileName(exam: ExamPackage): string {
-  const cleanKelas = (exam.teacherProfile?.gradeLevel || "Kelas VI")
+  const cleanId = (exam.id || "").trim().replace(/[/\\?%*:|"<>]/g, "");
+  const cleanCode = (exam.code || "")
     .trim()
+    .toUpperCase()
     .replace(/[/\\?%*:|"<>]/g, "")
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, "_");
 
-  const cleanMapel = (exam.teacherProfile?.subject || exam.title || "Mata Pelajaran")
-    .trim()
-    .replace(/[/\\?%*:|"<>]/g, "")
-    .replace(/\s+/g, " ");
+  // Prefer clean exam code if set and not default placeholder, otherwise use unique exam ID
+  const identifier = cleanCode && cleanCode !== "SOAL" ? cleanCode : cleanId || "CBT";
 
-  const cleanKode = (exam.code || "SOAL")
-    .trim()
-    .replace(/[/\\?%*:|"<>]/g, "")
-    .replace(/\s+/g, "")
-    .toUpperCase();
-
-  return `${cleanKelas}_${cleanMapel}_${cleanKode}.json`;
+  return `Naskah_Soal_${identifier}.json`;
 }
 
 /**
@@ -142,6 +137,21 @@ export function parseExamInfoFromDriveFileName(fileName: string): {
   examTitle?: string;
 } {
   const cleanName = fileName.replace(/\.json$/i, "").trim();
+
+  // Pattern 0: Naskah_Soal_[Identifier]
+  if (cleanName.startsWith("Naskah_Soal_")) {
+    const rawId = cleanName.replace(/^Naskah_Soal_/i, "").trim();
+    if (rawId.toLowerCase() === "cbt") {
+      return { examCode: "CBT", examTitle: "Naskah Soal CBT" };
+    }
+    const parts = rawId.split("_");
+    const examCode = parts[0] || rawId;
+    const examTitle = parts.slice(1).join(" ") || `Naskah Soal (${examCode})`;
+    return {
+      examCode: examCode.toUpperCase(),
+      examTitle,
+    };
+  }
 
   // Pattern 1: kelas_mata pelajaran_kode soal (e.g. Kelas VI_Pendidikan Pancasila_PP-01)
   const parts = cleanName.split("_");
@@ -469,14 +479,17 @@ export async function makeFilePubliclyReadable(accessToken: string, fileId: stri
 
 /**
  * Saves or updates a single ExamPackage to Google Drive.
- * Format nama file: kelas_mata pelajaran_kode soal.json
- * Folder: sub folder backup data aplikasi (SlideExam_CBT/Backup_Data_Aplikasi)
+ * 1. Mencegah duplikasi file dengan mencari file yang sudah ada (termasuk generic Naskah_Soal_CBT.json)
+ * 2. Memperbarui file lama (files.update via PATCH) menggunakan fileId yang ditemukan
+ * 3. Menggunakan nama file unik (Naskah_Soal_[ExamID].json / Naskah_Soal_[ExamCode].json)
+ * 4. Memindahkan file duplikat lama ke Trash sehingga hanya ada 1 file naskah soal per paket ujian.
  */
 export async function saveExamToGoogleDrive(
   accessToken: string,
   exam: ExamPackage
 ): Promise<{ fileId: string; fileName: string; webViewLink?: string; downloadUrl: string }> {
   const folderId = await getOrCreateBackupDataSubfolder(accessToken);
+  const rootFolderId = await getOrCreateSlideExamFolder(accessToken).catch(() => null);
   const fileName = formatExamDriveFileName(exam);
 
   const examToSave: ExamPackage = {
@@ -492,25 +505,98 @@ export async function saveExamToGoogleDrive(
   const delimiter = "\r\n--" + boundary + "\r\n";
   const closeDelim = "\r\n--" + boundary + "--";
 
-  // Check if we can update an existing file (by exam.gdriveFileId or by filename in folder)
   let targetFileId = exam.gdriveFileId;
+  const cleanId = (exam.id || "").trim().replace(/[/\\?%*:|"<>]/g, "");
+  const cleanCode = (exam.code || "").trim().toUpperCase().replace(/[/\\?%*:|"<>]/g, "").replace(/\s+/g, "_");
 
-  if (!targetFileId) {
-    // Check if a file with same name exists in folder
+  // Verify if existing exam.gdriveFileId is still alive in Google Drive
+  if (targetFileId) {
     try {
-      const q = `'${folderId}' in parents and name='${fileName}' and trashed=false`;
-      const searchRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
+      const checkRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${targetFileId}?fields=id,name,trashed&supportsAllDrives=true`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
-      if (searchRes.ok) {
-        const data = await searchRes.json();
-        if (data.files && data.files.length > 0) {
-          targetFileId = data.files[0].id;
+      if (checkRes.ok) {
+        const fileInfo = await checkRes.json();
+        if (fileInfo && fileInfo.trashed) {
+          targetFileId = undefined;
+        }
+      } else if (checkRes.status === 404) {
+        targetFileId = undefined;
+      }
+    } catch {
+      // Continue to query folder
+    }
+  }
+
+  // 1. Cari file yang sudah ada di folder target (mencakup nama unik, Naskah_Soal_CBT.json, atau kode/ID ujian)
+  const candidateFiles: Array<{ id: string; name: string; modifiedTime?: string }> = [];
+  const foldersToSearch = [folderId, rootFolderId].filter(Boolean) as string[];
+
+  for (const fId of foldersToSearch) {
+    try {
+      // Query pencarian: nama persis, generic Naskah_Soal_CBT.json, atau nama mengandung kode/ID ujian
+      const queries = [
+        `'${fId}' in parents and name='${fileName}' and trashed=false`,
+        `'${fId}' in parents and name='Naskah_Soal_CBT.json' and trashed=false`,
+      ];
+      if (cleanCode && cleanCode !== "SOAL" && cleanCode.length >= 2) {
+        queries.push(`'${fId}' in parents and name contains '${cleanCode}' and trashed=false`);
+      }
+      if (cleanId && cleanId.length >= 4) {
+        queries.push(`'${fId}' in parents and name contains '${cleanId}' and trashed=false`);
+      }
+      if (exam.gdriveFileName && exam.gdriveFileName !== fileName) {
+        queries.push(`'${fId}' in parents and name='${exam.gdriveFileName}' and trashed=false`);
+      }
+
+      for (const q of queries) {
+        const searchRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (searchRes.ok) {
+          const data = await searchRes.json();
+          if (data.files && Array.isArray(data.files)) {
+            for (const item of data.files) {
+              if (!candidateFiles.some((c) => c.id === item.id)) {
+                candidateFiles.push(item);
+              }
+            }
+          }
         }
       }
     } catch (e) {
-      console.warn("Drive search by filename skipped", e);
+      console.warn("Drive search for existing file skipped:", e);
+    }
+  }
+
+  // Jika targetFileId belum ditentukan, pilih file kandidat yang paling baru dimodifikasi
+  if (!targetFileId && candidateFiles.length > 0) {
+    candidateFiles.sort((a, b) => {
+      const timeA = new Date(a.modifiedTime || 0).getTime();
+      const timeB = new Date(b.modifiedTime || 0).getTime();
+      return timeB - timeA;
+    });
+    targetFileId = candidateFiles[0].id;
+  }
+
+  // 4. Bersihkan file duplikat lainnya ke Trash agar tersisa 1 file saja
+  if (candidateFiles.length > 1) {
+    const duplicatesToTrash = candidateFiles.filter((c) => c.id !== targetFileId);
+    for (const dup of duplicatesToTrash) {
+      try {
+        await fetch(`https://www.googleapis.com/drive/v3/files/${dup.id}?supportsAllDrives=true`, {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ trashed: true }),
+        });
+      } catch (errTrash) {
+        console.warn("Could not trash duplicate Drive file:", errTrash);
+      }
     }
   }
 
@@ -518,10 +604,10 @@ export async function saveExamToGoogleDrive(
   let webViewLink = "";
 
   if (targetFileId) {
-    // Update existing file content & metadata
+    // Update existing file content & metadata (files.update via PATCH)
     const metadata = {
       name: fileName,
-      description: `Naskah Soal SlideExam: ${exam.title} (${exam.code}) - ${exam.questions.length} butir - Disimpan: ${new Date().toLocaleString("id-ID")}`,
+      description: `Naskah Soal SlideExam: ${exam.title} (${exam.code || exam.id}) - ${exam.questions.length} butir - Disimpan: ${new Date().toLocaleString("id-ID")}`,
     };
 
     const multipartRequestBody =
@@ -533,7 +619,7 @@ export async function saveExamToGoogleDrive(
       fileContent +
       closeDelim;
 
-    const updateUrl = `https://www.googleapis.com/upload/drive/v3/files/${targetFileId}?uploadType=multipart&fields=id,name,webViewLink`;
+    const updateUrl = `https://www.googleapis.com/upload/drive/v3/files/${targetFileId}?uploadType=multipart&fields=id,name,webViewLink,modifiedTime&supportsAllDrives=true`;
     const res = await fetch(updateUrl, {
       method: "PATCH",
       headers: {
@@ -551,12 +637,12 @@ export async function saveExamToGoogleDrive(
   }
 
   if (!finalFileId) {
-    // Create new file in sub folder backup data aplikasi
+    // Create new file only if no existing file was found
     const metadata = {
       name: fileName,
       parents: [folderId],
       mimeType: "application/json",
-      description: `Naskah Soal SlideExam: ${exam.title} (${exam.code}) - ${exam.questions.length} butir - Disimpan: ${new Date().toLocaleString("id-ID")}`,
+      description: `Naskah Soal SlideExam: ${exam.title} (${exam.code || exam.id}) - ${exam.questions.length} butir - Disimpan: ${new Date().toLocaleString("id-ID")}`,
     };
 
     const multipartRequestBody =
@@ -568,7 +654,7 @@ export async function saveExamToGoogleDrive(
       fileContent +
       closeDelim;
 
-    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink";
+    const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,modifiedTime&supportsAllDrives=true";
     const res = await fetch(uploadUrl, {
       method: "POST",
       headers: {
@@ -1116,4 +1202,99 @@ export async function downloadBackupFromGoogleDrive(
   const json = await res.json();
   return json as AppStateBackup;
 }
+
+/**
+ * Maintenance: Scans Google Drive for duplicate exam files (specifically Naskah_Soal_CBT.json),
+ * moves extra duplicates to Trash, and keeps only the latest version based on timestamp.
+ */
+export async function cleanupDuplicateDriveFiles(accessToken: string): Promise<{
+  trashedCount: number;
+  keptFiles: string[];
+}> {
+  const rootFolderId = await getOrCreateSlideExamFolder(accessToken).catch(() => null);
+  const backupFolderId = await getOrCreateBackupDataSubfolder(accessToken).catch(() => null);
+  const foldersToScan = [backupFolderId, rootFolderId].filter(Boolean) as string[];
+
+  let trashedCount = 0;
+  const keptFiles: string[] = [];
+
+  for (const fId of foldersToScan) {
+    try {
+      // Find all json files in this folder
+      const q = `'${fId}' in parents and mimeType='application/json' and trashed=false`;
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      const files: Array<{ id: string; name: string; modifiedTime: string }> = data.files || [];
+
+      // Group files by normalized name or exam identity
+      const groups = new Map<string, Array<{ id: string; name: string; modifiedTime: string }>>();
+
+      files.forEach((f) => {
+        let groupKey = f.name.toLowerCase().trim();
+        // Specifically identify Naskah_Soal_CBT.json duplicates
+        if (groupKey === "naskah_soal_cbt.json") {
+          groupKey = "generic_naskah_soal_cbt";
+        } else if (groupKey.startsWith("naskah_soal_")) {
+          // Group by exam identifier
+          groupKey = groupKey.replace(/\.json$/i, "");
+        }
+        if (!groups.has(groupKey)) {
+          groups.set(groupKey, []);
+        }
+        groups.get(groupKey)!.push(f);
+      });
+
+      for (const [, groupList] of groups.entries()) {
+        if (groupList.length <= 1) {
+          if (groupList.length === 1) {
+            keptFiles.push(`${groupList[0].name} (${groupList[0].id})`);
+          }
+          continue;
+        }
+
+        // Sort descending by modifiedTime (newest first)
+        groupList.sort(
+          (a, b) => new Date(b.modifiedTime || 0).getTime() - new Date(a.modifiedTime || 0).getTime()
+        );
+
+        // Keep the latest one
+        const kept = groupList[0];
+        keptFiles.push(`${kept.name} (${kept.id})`);
+
+        // Trash all older duplicates
+        for (let i = 1; i < groupList.length; i++) {
+          const dup = groupList[i];
+          try {
+            const trashRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${dup.id}?supportsAllDrives=true`,
+              {
+                method: "PATCH",
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ trashed: true }),
+              }
+            );
+            if (trashRes.ok) {
+              trashedCount++;
+            }
+          } catch (eTrash) {
+            console.warn("Error moving duplicate to trash:", eTrash);
+          }
+        }
+      }
+    } catch (eScan) {
+      console.warn("Scan folder error in cleanupDuplicateDriveFiles:", eScan);
+    }
+  }
+
+  return { trashedCount, keptFiles };
+}
+
 
