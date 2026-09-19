@@ -404,13 +404,13 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
           if (driveRes.status === 403) {
             isRestricted = true;
             restrictionMessage =
-              "Akses ditolak oleh Google Drive (403 Forbidden). Kemungkinan file naskah soal berada di akun @belajar.id yang dibatasi oleh kebijakan organisasi atau belum diubah menjadi 'Siapa saja yang memiliki link'.";
+              "Akses ditolak oleh Google Drive (403 Forbidden). Pastikan file naskah soal berada di akun Google aktif (rachmatiyev@gmail.com) dan telah diubah izinnya menjadi 'Siapa saja yang memiliki link'.";
           }
 
           if (driveRes.ok) {
             const text = await driveRes.text();
 
-            // Check if Google Drive returned an HTML login redirect (typical with Belajar.id domain restrictions)
+            // Check if Google Drive returned an HTML login redirect (typical with restricted domain access)
             if (
               text.includes("accounts.google.com/ServiceLogin") ||
               text.includes("accounts.google.com/v3/signin") ||
@@ -420,7 +420,7 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
             ) {
               isRestricted = true;
               restrictionMessage =
-                "File Google Drive meminta login akun organisasi (kebijakan domain @belajar.id). File tidak dapat diakses secara publik oleh browser siswa atau server.";
+                "File Google Drive meminta otorisasi login akun organisasi. Harap gunakan akun pribadi (rachmatiyev@gmail.com) agar dapat diakses oleh browser siswa atau server.";
             }
 
             try {
@@ -480,7 +480,7 @@ app.get("/api/gdrive/exam/:fileId", async (req, res) => {
           isDomainRestricted: true,
           message:
             restrictionMessage ||
-            `Akses naskah soal Google Drive (${fileId}) ditolak. Kebijakan akun @belajar.id membatasi akses di luar domain organisasi. Harap gunakan akun Gmail pribadi (@gmail.com) atau gunakan Link Paket Mandiri (Anti-Gagal).`,
+            `Akses naskah soal Google Drive (${fileId}) ditolak. Kebijakan akun organisasi membatasi akses di luar domain. Harap gunakan akun Gmail pribadi (rachmatiyev@gmail.com) atau gunakan Link Paket Mandiri (Anti-Gagal).`,
         });
       }
     }

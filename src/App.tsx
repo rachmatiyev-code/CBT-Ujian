@@ -1403,15 +1403,15 @@ export default function App() {
                 <div className="p-4 bg-rose-950/40 border border-rose-500/40 rounded-2xl text-xs space-y-2.5 animate-in fade-in">
                   <div className="flex items-center gap-2 font-bold text-rose-300">
                     <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-                    <span>Kendala Izin Akun @belajar.id & Google Drive</span>
+                    <span>Kendala Izin Akses Google Drive (403 Forbidden)</span>
                   </div>
                   <p className="text-[11px] text-rose-200 leading-relaxed">
-                    Google Drive dari akun <strong>@belajar.id</strong> secara default membatasi akses file hanya untuk pengguna di dalam domain organisasi (Domain Access Control). Server publik atau siswa umum akan menerima pesan <em>403 Forbidden</em> atau <em>Soal tidak ditemukan</em>.
+                    Google Drive membatasi akses file jika naskah disimpan di akun organisasi/sekolah yang memiliki pembatasan domain (Domain Access Control) atau izin belum diatur ke publik.
                   </p>
                   <div className="p-3 bg-black/40 rounded-xl border border-rose-900/50 space-y-1.5 text-[11px] text-slate-300">
                     <strong className="text-white block font-semibold">Langkah Perbaikan untuk Guru:</strong>
                     <div>
-                      1. <strong className="text-emerald-300">Gunakan Akun Gmail Biasa (@gmail.com):</strong> Pindahkan file naskah soal ke akun Gmail pribadi, lalu ubah izin akses menjadi <em>"Siapa saja yang memiliki link"</em> &rarr; <em>"Pelihat"</em>.
+                      1. <strong className="text-emerald-300">Gunakan Akun Utama (rachmatiyev@gmail.com):</strong> Pastikan file naskah soal disimpan di akun Google pribadi Anda, lalu ubah izin akses menjadi <em>"Siapa saja yang memiliki link"</em> &rarr; <em>"Pelihat"</em>.
                     </div>
                     <div>
                       2. <strong className="text-cyan-300">Gunakan Format Direct Download Link:</strong> Salin format link langsung: <code className="text-amber-300 font-mono text-[10px]">https://drive.google.com/uc?export=download&id=ID_FILE</code>.
@@ -1520,7 +1520,7 @@ export default function App() {
                 <span>Petunjuk untuk Guru & Pengawas:</span>
               </strong>
               <p className="text-slate-400 leading-relaxed">
-                Jika naskah soal belum muncul otomatis di perangkat siswa, Anda dapat membagikan <strong>"Paket Anti-Gagal"</strong> dari menu <strong>Bagikan Ujian</strong>. Tautan tersebut bebas dari kendala izin Google Drive atau akun @belajar.id.
+                Jika naskah soal belum muncul otomatis di perangkat siswa, pastikan file disimpan pada akun Google aktif <strong>rachmatiyev@gmail.com</strong> dengan izin publik, atau bagikan tautan <strong>"Paket Anti-Gagal"</strong> dari menu <strong>Bagikan Ujian</strong> yang 100% mandiri tanpa kendala izin Drive.
               </p>
             </div>
 

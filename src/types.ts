@@ -18,6 +18,7 @@ export interface SchoolProfile {
 export interface TeacherProfile {
   teacherName: string;
   teacherNIP: string;
+  email?: string;
   subject: string;
   subjectCode: string;
   gradeLevel: string;

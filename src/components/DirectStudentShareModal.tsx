@@ -651,18 +651,18 @@ export const DirectStudentShareModal: React.FC<DirectStudentShareModalProps> = (
                   )}
                 </div>
 
-                {/* Catatan Penting Akun Belajar.id */}
+                {/* Catatan Penting Akun Google Drive */}
                 <div className="p-3 bg-black/40 border border-amber-500/30 rounded-xl space-y-1.5 text-[11px]">
                   <div className="flex items-center gap-1.5 text-amber-300 font-bold">
                     <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                    <span>Perhatian Pengguna Akun @belajar.id:</span>
+                    <span>Perhatian Pengaturan Izin Google Drive:</span>
                   </div>
                   <p className="text-slate-300 leading-relaxed">
-                    Google Workspace Pendidikan (<strong>@belajar.id</strong>) membatasi akses file hanya untuk domain sekolah. Jika link dibuka oleh siswa umum/tanpa akun belajar.id, Google akan memblokir (<em>403 Forbidden</em>).
+                    Pastikan naskah soal disimpan di akun Google pribadi aktif Anda (<strong>rachmatiyev@gmail.com</strong>) dan BUKAN akun instansi/sekolah yang dibatasi oleh kebijakan domain internal.
                   </p>
                   <div className="text-slate-400 space-y-1 pt-0.5">
-                    <div>👉 <strong>Solusi 1:</strong> Simpan file menggunakan akun Gmail pribadi (<strong>@gmail.com</strong>) dengan akses <em>"Siapa saja yang memiliki link"</em>.</div>
-                    <div>👉 <strong>Solusi 2 (Rekomendasi Utama):</strong> Gunakan tab <strong>"Paket Anti-Gagal"</strong> di atas. Link tersebut 100% mandiri dan tidak terpengaruh kebijakan privasi Google Drive.</div>
+                    <div>👉 <strong>Solusi 1:</strong> Simpan file menggunakan akun Gmail utama Anda (<strong>rachmatiyev@gmail.com</strong>) dengan izin <em>"Siapa saja yang memiliki link"</em> &rarr; <em>"Pelihat"</em>.</div>
+                    <div>👉 <strong>Solusi 2 (Rekomendasi Utama):</strong> Gunakan tab <strong>"Paket Anti-Gagal"</strong> di atas. Link tersebut 100% mandiri dan langsung memuat soal tanpa memerlukan otorisasi Google Drive.</div>
                   </div>
                 </div>
               </div>

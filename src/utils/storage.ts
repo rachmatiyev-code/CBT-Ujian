@@ -55,7 +55,14 @@ export const getGeminiRequestHeaders = (): Record<string, string> => {
 export const getSchoolProfile = (): SchoolProfile => {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.SCHOOL_PROFILE);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (!parsed.email || parsed.email.includes("belajar.id") || parsed.email.includes("sman-nusantaraunggul.sch.id")) {
+        parsed.email = "rachmatiyev@gmail.com";
+        localStorage.setItem(STORAGE_KEYS.SCHOOL_PROFILE, JSON.stringify(parsed));
+      }
+      return parsed;
+    }
   } catch (e) {
     console.error("Failed to load school profile", e);
   }
@@ -64,6 +71,9 @@ export const getSchoolProfile = (): SchoolProfile => {
 export const getStoredSchoolProfile = getSchoolProfile;
 
 export const saveSchoolProfile = (profile: SchoolProfile) => {
+  if (profile.email && profile.email.includes("belajar.id")) {
+    profile.email = "rachmatiyev@gmail.com";
+  }
   localStorage.setItem(STORAGE_KEYS.SCHOOL_PROFILE, JSON.stringify(profile));
 };
 
@@ -127,6 +137,7 @@ export const createNewExamPackage = (title: string = "Ujian Baru"): ExamPackage 
     teacherProfile: {
       teacherName: lastTeacher.teacherName || "Guru Pengampu",
       teacherNIP: lastTeacher.teacherNIP || "-",
+      email: lastTeacher.email || "rachmatiyev@gmail.com",
       subject: lastTeacher.subject || "Mata Pelajaran",
       subjectCode: lastTeacher.subjectCode || code,
       gradeLevel: lastTeacher.gradeLevel || "Kelas X",

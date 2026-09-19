@@ -7,7 +7,7 @@ export const defaultSchoolProfile: SchoolProfile = {
   address: "Jl. Pendidikan Nasional No. 45, Kompleks Edukasi Terpadu",
   postalCode: "65123",
   phone: "(0341) 554321 / 0812-3456-7890",
-  email: "info@sman-nusantaraunggul.sch.id",
+  email: "rachmatiyev@gmail.com",
   website: "www.sman-nusantaraunggul.sch.id",
   principalName: "Drs. H. Bambang Sudarsono, M.Pd.",
   principalNIP: "19720415 199803 1 004",
@@ -19,6 +19,7 @@ export const defaultSchoolProfile: SchoolProfile = {
 export const defaultTeacherProfile: TeacherProfile = {
   teacherName: "Rachmat Susanto, S.Pd., M.Kom.",
   teacherNIP: "19880921 201402 1 002",
+  email: "rachmatiyev@gmail.com",
   subject: "Informatika & Literasi Digital",
   subjectCode: "INF-X-2026",
   gradeLevel: "Kelas X (Fase E)",

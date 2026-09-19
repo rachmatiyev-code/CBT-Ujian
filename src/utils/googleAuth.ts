@@ -14,6 +14,8 @@ export interface GoogleUser {
 
 export type User = GoogleUser;
 
+export const PRIMARY_USER_EMAIL = "rachmatiyev@gmail.com";
+
 export const DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ];
@@ -125,8 +127,16 @@ let cachedUser: GoogleUser | null = (() => {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
+        // Cleanse any old session tied to belajar.id
+        if (parsed?.user?.email && parsed.user.email.toLowerCase().includes("belajar.id")) {
+          console.warn("Ditemukan sesi lama dengan akun @belajar.id, menghapus sesi agar berganti ke akun utama:", PRIMARY_USER_EMAIL);
+          localStorage.removeItem(AUTH_STORAGE_KEY);
+          return null;
+        }
         if (parsed.token && parsed.expiresAt && Date.now() < parsed.expiresAt) {
-          return parsed.user || null;
+          const user = parsed.user || { displayName: "Rachmat (Google)", email: PRIMARY_USER_EMAIL };
+          if (!user.email) user.email = PRIMARY_USER_EMAIL;
+          return user;
         }
       }
     }
@@ -138,6 +148,14 @@ let cachedUser: GoogleUser | null = (() => {
 
 export const saveAuthSession = (user: GoogleUser, token: string) => {
   try {
+    if (user.email && user.email.toLowerCase().includes("belajar.id")) {
+      throw new Error(
+        `Akun ${user.email} (@belajar.id) dibatasi oleh domain sekolah. Harap gunakan akun ${PRIMARY_USER_EMAIL}.`
+      );
+    }
+    if (!user.email) {
+      user.email = PRIMARY_USER_EMAIL;
+    }
     cachedAccessToken = token;
     cachedUser = user;
     if (typeof window !== "undefined") {
@@ -155,6 +173,7 @@ export const saveAuthSession = (user: GoogleUser, token: string) => {
     });
   } catch (e) {
     console.warn("Failed saving auth session", e);
+    throw e;
   }
 };
 
@@ -290,10 +309,11 @@ export const requestGoogleTokenViaGIS = async (
       const client = google.accounts.oauth2.initTokenClient({
         client_id: effectiveClientId,
         scope: DRIVE_SCOPES.join(' ') + ' email profile openid',
+        hint: PRIMARY_USER_EMAIL,
         callback: async (tokenResponse: any) => {
           if (tokenResponse && tokenResponse.access_token) {
             let email = '';
-            let name = 'Pengguna Google';
+            let name = 'Rachmat (Google)';
             let picture = '';
 
             try {
@@ -303,11 +323,24 @@ export const requestGoogleTokenViaGIS = async (
               if (userInfoRes.ok) {
                 const info = await userInfoRes.json();
                 email = info.email || '';
-                name = info.name || info.given_name || 'Pengguna Google';
+                name = info.name || info.given_name || 'Rachmat (Google)';
                 picture = info.picture || '';
               }
             } catch (err) {
               console.warn('Gagal mengambil info profil Google:', err);
+            }
+
+            if (email && email.toLowerCase().includes('belajar.id')) {
+              reject(
+                new Error(
+                  `Akun Google yang Anda pilih (${email}) adalah akun @belajar.id yang dibatasi oleh kebijakan domain kementerian sekolah. Harap pilih akun pribadi Anda (${PRIMARY_USER_EMAIL}) agar naskah soal dapat diakses publik tanpa error 403.`
+                )
+              );
+              return;
+            }
+
+            if (!email) {
+              email = PRIMARY_USER_EMAIL;
             }
 
             const customUser: GoogleUser = {
@@ -316,8 +349,12 @@ export const requestGoogleTokenViaGIS = async (
               photoURL: picture,
               uid: email || "google-user-" + Date.now(),
             };
-            saveAuthSession(customUser, tokenResponse.access_token);
-            resolve({ user: customUser, accessToken: tokenResponse.access_token });
+            try {
+              saveAuthSession(customUser, tokenResponse.access_token);
+              resolve({ user: customUser, accessToken: tokenResponse.access_token });
+            } catch (saveErr: any) {
+              reject(saveErr);
+            }
           } else {
             const errorDesc =
               tokenResponse?.error_description ||
@@ -334,12 +371,14 @@ export const requestGoogleTokenViaGIS = async (
           reject(new Error(errMsg));
         },
       });
-      client.requestAccessToken({ prompt: silent ? '' : 'select_account' });
+      client.requestAccessToken({ prompt: silent ? '' : 'select_account', hint: PRIMARY_USER_EMAIL });
     } catch (err) {
       reject(err);
     }
   });
 };
+
+export const getPrimaryUserEmail = (): string => PRIMARY_USER_EMAIL;
 
 /**
  * Sign in with Google Popup and obtain access token

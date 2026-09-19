@@ -25,7 +25,7 @@ export class GoogleDriveAuthError extends Error {
 export class GoogleDrivePermissionError extends Error {
   isDomainRestricted = true;
   constructor(
-    message = "Akses file naskah soal ditolak oleh Google Drive (403 Forbidden / Belajar.id Domain Restricted). Kebijakan akun @belajar.id membatasi akses file di luar domain organisasi."
+    message = "Akses file naskah soal ditolak oleh Google Drive (403 Forbidden). Pastikan file disimpan pada akun Gmail aktif (rachmatiyev@gmail.com) dan izin akses diatur ke 'Siapa saja yang memiliki link'."
   ) {
     super(message);
     this.name = "GoogleDrivePermissionError";
@@ -76,7 +76,7 @@ export async function parseGoogleDriveError(res: Response, fallbackMsg: string):
       return new Error("Batas kuota akses Google Drive tercapai sementara. Silakan tunggu beberapa saat lagi.");
     }
     return new GoogleDrivePermissionError(
-      "Akses ditolak oleh Google Drive (403 Forbidden / Akun Belajar.id). Jika Anda menggunakan akun @belajar.id, izin file biasanya dibatasi untuk internal organisasi sekolah. Harap pindahkan file ke akun Gmail pribadi (@gmail.com) atau bagikan dengan Link Paket Mandiri (Anti-Gagal)."
+      "Akses ditolak oleh Google Drive (403 Forbidden). Pastikan file naskah soal disimpan di akun Gmail pribadi Anda (rachmatiyev@gmail.com) dengan izin 'Siapa saja yang memiliki link', atau bagikan dengan Link Paket Mandiri (Anti-Gagal)."
     );
   }
 
@@ -918,7 +918,7 @@ export async function loadExamFromGoogleDrive(
         notifyAuthExpired();
       } else if (res.status === 403) {
         lastPermissionError =
-          "Akses ditolak oleh Google Drive (403 Forbidden). Akun @belajar.id kemungkinan membatasi pembagian file di luar domain.";
+          "Akses ditolak oleh Google Drive (403 Forbidden). Pastikan file berada di akun Google aktif (rachmatiyev@gmail.com) dan izin akses disetel ke 'Siapa saja yang memiliki link'.";
       }
     } catch (e) {
       console.warn("Direct Drive API fetch error:", e);
@@ -949,7 +949,7 @@ export async function loadExamFromGoogleDrive(
       throw new GoogleDrivePermissionError(lastPermissionError);
     }
     throw new Error(
-      "Gagal memuat naskah soal dari Google Drive. Pastikan file dibagikan dengan akses 'Siapa saja yang memiliki link' atau gunakan akun Gmail biasa (@gmail.com) jika akun @belajar.id dibatasi oleh kebijakan sekolah."
+      "Gagal memuat naskah soal dari Google Drive. Pastikan file dibagikan dengan akses 'Siapa saja yang memiliki link' atau gunakan akun Gmail pribadi (rachmatiyev@gmail.com) untuk menghindari pembatasan organisasi."
     );
   }
 

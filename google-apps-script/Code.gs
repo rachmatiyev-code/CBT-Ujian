@@ -21,7 +21,7 @@
  * 4. Klik "Deploy" -> "New deployment"
  * 5. Pilih tipe: "Web app"
  * 6. Set Description: "SlideExam CBT Production"
- * 7. Set Execute as: "Me" (email Google Anda)
+ * 7. Set Execute as: "Me" (rachmatiyev@gmail.com)
  * 8. Set Who has access: "Anyone" (Siapa saja - agar siswa bisa mengirim jawaban tanpa login akun Google)
  * 9. Klik "Deploy", beri izin akses Google Drive & Sheets yang diminta.
  * 10. Salin "Web app URL" (akhiran /exec) dan tempelkan ke aplikasi SlideExam CBT.

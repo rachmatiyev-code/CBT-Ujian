@@ -69,6 +69,7 @@ import {
   formatGoogleAuthErrorMessage,
   GoogleUser,
   User,
+  PRIMARY_USER_EMAIL,
 } from "../utils/googleAuth";
 import {
   isDriveAutoSyncEnabled,
@@ -588,6 +589,30 @@ export const BackupRestoreView: React.FC<BackupRestoreViewProps> = ({ onDataRest
             <Download className="w-4 h-4 text-indigo-400" />
             <span>Unduh File JSON (Offline)</span>
           </button>
+        </div>
+      </div>
+
+      {/* Akun Google Aktif Terpilih */}
+      <div className="bg-[#16161a] border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 shrink-0">
+            <UserIcon className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-300">Akun Google Aktif:</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                Tersambung (Bebas Restriksi Domain)
+              </span>
+            </div>
+            <div className="text-sm font-semibold text-white font-mono flex items-center gap-2 mt-0.5">
+              <span>{currentUser?.email || PRIMARY_USER_EMAIL}</span>
+            </div>
+          </div>
+        </div>
+        <div className="text-[11px] text-slate-400 sm:text-right max-w-sm">
+          Akun personal (@gmail.com) aktif digunakan untuk Google Drive & Google Apps Script tanpa pembatasan domain organisasi.
         </div>
       </div>
 
